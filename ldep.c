@@ -17,9 +17,10 @@
 #define DEBUG_SCAN		1
 #define DEBUG_TREE		2
 #define DEBUG_UNLINK	4
+#define DEBUG_WALK		8
 
-#define DEBUG			4
-#define NWORK
+#define DEBUG			(8|4)
+#undef  NWORK
 
 typedef struct ObjFRec_		*ObjF;
 typedef struct SymRec_		*Sym;
@@ -113,6 +114,7 @@ void workListIterate(ObjF f, DepWalkAction action, void *closure);
 
 extern ObjF sysLinkSet;
 extern ObjF undefLinkSet;
+extern ObjF optionalLinkSet;
 
 #define STRCHUNK	10000
 
@@ -154,6 +156,7 @@ link: { anchor: &undefLinkSet },
 
 ObjF sysLinkSet   = 0;
 ObjF undefLinkSet = &undefSymPod;
+ObjF optionalLinkSet = 0;
 
 ObjF fileListHead=&undefSymPod, fileListTail=&undefSymPod;
 
@@ -389,12 +392,14 @@ register Xref imp;
 		} else {
 			ObjF	dep= (*found)->exportedBy->obj;
 			if ( f->link.anchor && !dep->link.anchor ) {
-				f->link.next = dep;
 				dep->link.anchor = f->link.anchor;
 				linkObj(dep);
 			}
 		}
 	}
+
+	f->link.next = *(f->link.anchor);
+	*f->link.anchor = f;
 }
 
 void
@@ -425,7 +430,9 @@ DepPrintArgRec	arg;
 			printf("\n");
 			arg.minDepth    = 1;
 			arg.indent      = 0;
-			depwalk(ex->obj, depPrint, (void*)&arg, WALK_IMPORTS);
+			arg.depthIndent = -1;
+			depwalk(ex->obj, depPrint, (void*)&arg, WALK_IMPORTS | WALK_BUILD_LIST);
+			depwalkListRelease(ex->obj);
 		}
 	}
 
@@ -435,10 +442,12 @@ DepPrintArgRec	arg;
 
 	if ( imp ) {
 		printf("\n");
-		arg.minDepth = 0;
-		arg.indent   = 4;
+		arg.minDepth    = 0;
+		arg.indent      = 4;
+		arg.depthIndent = -1;
 		do {
-			depwalk(imp->obj, depPrint, (void*)&arg, WALK_EXPORTS);
+			depwalk(imp->obj, depPrint, (void*)&arg, WALK_EXPORTS | WALK_BUILD_LIST);
+			depwalkListRelease(imp->obj);
 		} while ( imp = XREF_NEXT(imp) );
 	} else {
 		printf(" NONE\n");
@@ -574,6 +583,8 @@ depwalk_rec(ObjF f, int depth)
 {
 register int	i;
 register Xref ref;
+
+assert(depth < 55);
 
 	if (depwalkAction)
 		depwalkAction(f,depth,depwalkClosure);
@@ -771,9 +782,7 @@ int
 main(int argc, char **argv)
 {
 FILE	*feil=stdin;
-ObjF	*sets=0;
 ObjF	f;
-int		nsets=0;
 int		i,nfile,ch;
 int		quiet = 0;
 int		showSyms = 0;
@@ -822,25 +831,18 @@ int		showDeps = 0;
 
 	for (f=fileListHead; f; f=f->next) { 
 		if (!f->link.anchor) {
-			sets=realloc(sets,sizeof(*sets)*++nsets);
-			sets[nsets-1]  = f;
-			f->link.anchor = sets + (nsets-1);
+			if ( !sysLinkSet ) {
+				f->link.anchor = &sysLinkSet;
+			} else {
+				f->link.anchor = &optionalLinkSet;
+			}
 			linkObj(f);
 		}
 	}
-	sysLinkSet = sets[0];
 
 	if (quiet) {
 		printf("OK, that's it for now\n");
 		exit(0);
-	}
-
-	printf("I have the link sets (1st is 'system' or 'basic'):\n");
-	for (i=0; i<nsets; i++) {
-		for (f=sets[i]; f; f=f->link.next) {
-			printf("%s  ",f->name);
-		}
-		printf("\n");
 	}
 
 	if (showSyms)
@@ -852,9 +854,12 @@ int		showDeps = 0;
 				arg.minDepth    =  0;
 				arg.indent      = -4;
 				arg.depthIndent = 2;
+#if 0
+			/* this recursion can become VERY deep */
 			printf("\n\nDependencies ON object: ");
 			depwalk(f, depPrint, (void*)&arg, WALK_EXPORTS);
-			printf("\nUnified list: \n");
+#endif
+			printf("\nFlat dependency list for objects requiring: %s\n", f->name);
 			arg.indent      = 0;
 			arg.depthIndent = -1;
 			depwalk(f, depPrint, (void*)&arg, WALK_EXPORTS | WALK_BUILD_LIST);
