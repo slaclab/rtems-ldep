@@ -83,7 +83,7 @@
 #define DEBUG_UNLINK	(1<<4)
 #define DEBUG_COMMENT	(1<<5)
 
-#define DEBUG			(DEBUG_LINK | DEBUG_UNLINK)
+#define DEBUG			(DEBUG_COMMENT)
 
 #define NWORK
 
