@@ -1703,6 +1703,15 @@ char *strip = strrchr(nm,'/');
 	fprintf(stderr,"                    ignored. Thus, output from 'nm -fposix' is accepted.\n");
 	fprintf(stderr,"     -s:   show all symbol info (huge amounts of data! -- use '-l', '-u')\n");
 	fprintf(stderr,"     -u:   log info about the unlinking process\n");
+	fprintf(stderr,"\n"
+				   "   NOTES:\n");
+	fprintf(stderr,"\n"
+				   "     -     '-o' and '-x' files may contain 'C-style' comments ('/* */') with the restriction\n");
+	fprintf(stderr,"           that a comment must not split an input line (but a comment may start on one line\n");
+	fprintf(stderr,"           and end on another line, i.e.\n");
+	fprintf(stderr,"               'blah/* is */illegal:'\n");
+	fprintf(stderr,"               'blah:/* is \n");
+	fprintf(stderr,"                legal*/foo:\n");
 }
 
 /* Primitive interactive command interpreter (database queries) */

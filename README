@@ -157,5 +157,5 @@ Generate linker script, application symbols in 'app.nm'
 Generate linker script, application 'main' symbol is 'Init',
 remove objects listed in 'exclude_objects':
 
-  ldep -e script -A Init -r exclude_objects app.nm libxxx.nm ...
+  ldep -e script -A Init -x exclude_objects app.nm libxxx.nm ...
 
