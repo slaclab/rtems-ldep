@@ -13,6 +13,8 @@
 #include <assert.h>
 #include <search.h>
 #include <unistd.h>
+#include <string.h>
+#include <ctype.h>
 
 #define DEBUG_SCAN		1
 #define DEBUG_TREE		2
@@ -26,6 +28,7 @@ typedef struct ObjFRec_		*ObjF;
 typedef struct SymRec_		*Sym;
 typedef struct XrefRec_		*Xref;
 typedef struct LinkRec_		*LinkSet;
+typedef struct LibRec_		*Lib;
 
 typedef struct LinkRec {
 	ObjF	*anchor;
@@ -35,6 +38,7 @@ typedef struct LinkRec {
 typedef struct ObjFRec_ {
 	char	*name;		/* name of this object file */
 	ObjF	next;		/* linked list of all objects */
+	Lib		lib;		/* libary we're part of or NULL */
 	LinkRec link; 		/* link set */
 	ObjF	work;		/* temp pointer to do work */
 #ifndef NWORK
@@ -45,6 +49,13 @@ typedef struct ObjFRec_ {
 	int		nimports;
 	Xref	imports;	/* symbols exported by this object */
 } ObjFRec;
+
+typedef struct LibRec_ {
+	char	*name;
+	Lib		next;		/* linked list of libraries */
+	int		nfiles;
+	ObjF	*files;		/* pointer array of library members */
+} LibRec;
 
 typedef struct SymRec_ {
 	char	*name;
@@ -112,7 +123,7 @@ int  checkCircWorkList(ObjF f);
 void depwalkListRelease(ObjF f);
 void workListIterate(ObjF f, DepWalkAction action, void *closure);
 
-extern ObjF sysLinkSet;
+extern ObjF appLinkSet;
 extern ObjF undefLinkSet;
 extern ObjF optionalLinkSet;
 
@@ -154,11 +165,15 @@ static ObjFRec undefSymPod = {
 link: { anchor: &undefLinkSet },
 };
 
-ObjF sysLinkSet   = 0;
+ObjF appLinkSet   = 0;
 ObjF undefLinkSet = &undefSymPod;
 ObjF optionalLinkSet = 0;
 
 ObjF fileListHead=&undefSymPod, fileListTail=&undefSymPod;
+Lib  libListHead=0, libListTail=0;
+
+static int	numFiles = 0;
+static int  numLibs  = 0;
 
 void *symTbl = 0;
 
@@ -195,8 +210,98 @@ int		i;
 	}
 }
 
+static Lib
+createLib(char *name)
+{
+Lib	rval;
+
+	assert( rval = calloc(1, sizeof(*rval)) );
+	assert( rval->name = stralloc(strlen(name) + 1) );
+	if (libListTail)
+		libListTail->next = rval;
+	else
+		libListHead	= rval;
+	libListTail = rval;
+	numLibs++;
+	return rval;
+}
+
+void
+libAddObj(char *libname, ObjF obj)
+{
+Lib l;
+int i;
+	for (l=libListHead; l; l=l->next) {
+		if ( !strcmp(l->name, libname) )
+			break;
+	}
+	if ( !l ) {
+		/* must create a new library */
+		l = createLib(libname);
+	}
+	/* sanity check */
+	for ( i=0; i<l->nfiles; i++) {
+		assert( strcmp(l->files[i]->name, obj->name) );
+	}
+	i = l->nfiles+1;
+	assert( l->files = realloc(l->files, i * sizeof(*l->files)) );
+	l->files[l->nfiles] = obj;
+	l->nfiles = i;
+	obj->lib  = l;
+}
+
+static ObjF
+createObj(char *name)
+{
+ObjF obj;
+int  l = strlen(name);
+char *po,*pc,*objn;
+
+	objn = name;
+	po   = 0;
+	/* is it part of a library ? */
+	if ( l>0 && ']'== *(pc=name+(l-1)) ) {
+		if ( !(po = strrchr(name,'[')) ) {
+			fprintf(stderr,"ERROR: misformed archive member name: %s\n",name);
+			fprintf(stderr,"       'library[member]' expected\n");
+			exit(1);
+		}
+		*po  = 0;
+		*pc  = 0;
+		objn =  po+1;
+	}
+
+	assert( obj = calloc(1, sizeof(*obj)) );
+
+	/* build/copy name */
+	assert( obj->name = stralloc(strlen(objn) + 1) );
+	strcpy( obj->name, objn );
+
+	/* append to list of objects */
+	fileListTail->next = obj;
+	fileListTail = obj;
+	numFiles++;
+
+	if (po) {
+		/* part of a library */
+		libAddObj(name, obj);
+		*po = '[';
+		*pc = ']';
+	}
+
+	return obj;
+}
+
+
+#ifdef DEBUG
+#define TOUPPER(ch)	(ch)			/* more paranoia when checking symbol types */
+#else
+#define TOUPPER(ch) toupper(ch) 	/* less paranoia when checking symbol types */
+#endif
+
+
 int
-scan_file(FILE *f)
+scan_file(FILE *f, char *name)
 {
 char	buf[MAXBUF+1];
 int		got;
@@ -219,27 +324,21 @@ Sym		*found;
 		}
 		switch (got) {
 			default:
-				fprintf(stderr,"Unable to read line %i (%i conversions of '%s')\n",line,got,THEFMT);
+				fprintf(stderr,"Unable to read %s/line %i (%i conversions of '%s')\n",name,line,got,THEFMT);
 				return -1;
 
 			case 1:
 				len = strlen(buf);
 				if ( ':' != buf[len-1] ) {
-					fprintf(stderr,"<FILENAME> in line %i not ':' terminated - did you use 'nm -fposix?'\n", line);
+					fprintf(stderr,"<FILENAME> in %s/line %i not ':' terminated - did you use 'nm -fposix?'\n", name, line);
 					return -1;
 				}
 				fixupObj(obj);
-				assert( obj = calloc(1, sizeof(*obj)) );
 
-				/* build/copy name */
-				assert( obj->name = malloc(len) );
-				len--; /* strip trailing ':' */
-				buf[len]=0;
-				strcpy( obj->name, buf );
+				/* strip trailing ':' */
+				buf[--len]=0;
 
-				/* append to list of objects */
-				fileListTail->next = obj;
-				fileListTail = obj;
+				obj = createObj(buf);
 
 #if DEBUG & DEBUG_SCAN
 				printf("In FILE: '%s'\n", buf);
@@ -248,8 +347,22 @@ Sym		*found;
 
 			case 2:
 				if (!obj) {
-					fprintf(stderr,"Symbol without object file?? (line %i)\n",line);
-					return -1;
+					char *dot, *slash,*nmbuf;
+					fprintf(stderr,"Warning: Symbol without object file??\n");
+				    fprintf(stderr,"-> substituting symbol file name... (%s/line %i)\n",name,line);
+
+					assert( nmbuf = malloc(strlen(name)+5) );
+
+					strcpy( nmbuf, name );
+					slash = strchr(nmbuf, '/');
+					dot   = strrchr(nmbuf, '.');
+					if ( !dot || (slash && slash > dot) ) {
+						strcat(nmbuf, ".o");
+					} else {
+						strcpy(dot+1,"o");
+					}
+					obj = createObj(nmbuf);
+					free(nmbuf);
 				}
 
 				if ( !nsym )
@@ -274,7 +387,7 @@ Sym		*found;
 
 				weak = 0;
 
-				switch ( type ) {
+				switch ( TOUPPER(type) ) {
 					default:
 						fprintf(stderr,"Unknown symbol type '%c' (line %i)\n",type,line);
 					return -1;
@@ -303,6 +416,9 @@ Sym		*found;
 							  }
 					break;
 
+#ifndef DEBUG /* less paranoia */
+					case '?':
+#endif
 					case 'U':
 							  {
 							  Xref im;
@@ -462,7 +578,7 @@ int		i;
 ObjF	*pl;
 
 #if DEBUG & DEBUG_UNLINK
-	printf("Removing object '%s'... ", f->name);
+	printf("\n  removing object '%s'... ", f->name);
 #endif
 
 	for (i=0, imp=f->imports; i<f->nimports; i++, imp++) {
@@ -492,15 +608,20 @@ ObjF	*pl;
 	f->link.next   = 0;
 	f->link.anchor = 0;
 #if DEBUG & DEBUG_UNLINK
-	printf("done\n");
+	printf("OK\n");
 #endif
 }
 
 static void
 checkSysLinkSet(ObjF f, int depth, void *closure)
 {
-	if ( f->link.anchor == &sysLinkSet )
+	if ( f->link.anchor == &appLinkSet ) {
+#if DEBUG & DEBUG_UNLINK
+		if ( ! *(int*)closure )
+			printf("  --> rejected because '%s' is needed by app", f->name);
+#endif
 		*(int*)closure = 1;
+	}
 }
 
 static void
@@ -549,7 +670,7 @@ ObjF	q = &undefSymPod;
 
 	for (i=0, ex=q->exports; i<q->nexports; i++,ex++) {
 #if DEBUG & DEBUG_UNLINK
-		printf("removing objects depending on '%s'...\n", ex->sym->name);
+		printf("removing objects depending on '%s'...", ex->sym->name);
 #endif
 		while (ex->sym->importedFrom && 0==unlinkObj(ex->sym->importedFrom->obj))
 			/* nothing else to do */;
@@ -558,12 +679,15 @@ ObjF	q = &undefSymPod;
 			p = ex->sym->importedFrom;
 			do {
 #if DEBUG & DEBUG_UNLINK
-				printf("skipping system dependeny; object '%s'\n",p->obj->name);
+				printf("\n  skipping system dependeny; object '%s'\n",p->obj->name);
 #endif
 				while ( (n=XREF_NEXT(p)) && 0 == unlinkObj(n->obj) )
 					/* nothing else to do */;
 			} while ( p = n ); /* reached a system module; skip */
 		}
+#if DEBUG & DEBUG_UNLINK
+		printf("done.\n");
+#endif
 	}
 	return 0;
 }
@@ -584,7 +708,7 @@ depwalk_rec(ObjF f, int depth)
 register int	i;
 register Xref ref;
 
-assert(depth < 55);
+//assert(depth < 55);
 
 	if (depwalkAction)
 		depwalkAction(f,depth,depwalkClosure);
@@ -782,7 +906,8 @@ int
 main(int argc, char **argv)
 {
 FILE	*feil=stdin;
-ObjF	f;
+ObjF	f, lastAppObj=0; 
+ObjF	*linkSet;
 int		i,nfile,ch;
 int		quiet = 0;
 int		showSyms = 0;
@@ -810,14 +935,20 @@ int		showDeps = 0;
 	nfile = optind;
 
 	do {
-		if ( nfile < argc && !(feil=fopen(argv[nfile],"r")) ) {
+		char *nm = nfile < argc ? argv[nfile] : "<stdin>";
+		if ( nfile < argc && !(feil=fopen(nm,"r")) ) {
 			perror("opening file");
 			exit(1);
 		}
-		if (scan_file(feil)) {
-			fprintf(stderr,"Error scanning %s\n", nfile < argc ? argv[nfile] : "<stdin>");
+		if (scan_file(feil,nm)) {
+			fprintf(stderr,"Error scanning %s\n",nm); 
 			exit(1);
 		}
+		/* the first file we scan contains the application's
+		 * mandatory file set
+		 */
+		if ( !lastAppObj )
+			lastAppObj = fileListTail;
 	} while (++nfile < argc);
 
 	gatherDanglingUndefs();
@@ -829,15 +960,13 @@ int		showDeps = 0;
 
 	assert( 0 == checkObjPtrs() );
 
-	for (f=fileListHead; f; f=f->next) { 
+	for ( f=fileListHead, linkSet = &appLinkSet ; f; f=f->next) { 
 		if (!f->link.anchor) {
-			if ( !sysLinkSet ) {
-				f->link.anchor = &sysLinkSet;
-			} else {
-				f->link.anchor = &optionalLinkSet;
-			}
+			f->link.anchor = linkSet;
 			linkObj(f);
 		}
+		if ( f==lastAppObj )
+			linkSet = &optionalLinkSet;	
 	}
 
 	if (quiet) {
