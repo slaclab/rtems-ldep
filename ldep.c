@@ -13,7 +13,8 @@
 #include <assert.h>
 #include <search.h>
 
-#define DEBUG
+#define DEBUG 1
+#define NWORK
 
 typedef struct ObjFRec_		*ObjF;
 typedef struct SymRec_		*Sym;
@@ -73,13 +74,13 @@ typedef struct ImportRec_ {
 
 static int warn = DEFAULT_WARN_FLAGS;
 
-static inline void export_set_next(Export e, Export next)
+static __inline__ void export_set_next(Export e, Export next)
 {
 	e->multiuse &= EXPORT_FLAGS;
 	e->multiuse |= ((unsigned)next) & ~EXPORT_FLAGS;
 }
 
-static inline void export_set_weak(Export e, int weak)
+static __inline__ void export_set_weak(Export e, int weak)
 {
 	if (weak)
 		e->multiuse |= EXPORT_FLG_WEAK;
@@ -89,8 +90,11 @@ static inline void export_set_weak(Export e, int weak)
 
 typedef void (*DepWalkAction)(ObjF f, int depth, void *closure);
 
+/* mode bits */
+#define WALK_BUILD_LIST	(1<<0)
+void depwalk(ObjF f, DepWalkAction action, void *closure, int mode);
+
 static void depwalk_rec(ObjF f, int depth);
-void depwalk(ObjF f, DepWalkAction action, void *closure);
 static void depPrint(ObjF f, int depth, void *closure);
 
 #define STRCHUNK	10000
@@ -122,7 +126,15 @@ char			*rval;
 
 #define THEFMT XFMT(MAXBUF)
 
-ObjF fileListHead=0, fileListTail=0;
+/* a "special" object exporting all symbols not defined
+ * anywhere else
+ */
+static ObjFRec undefSymPod = {
+	"<UNDEFINED>",
+link: {anchor: &undefSymPod, },
+};
+
+ObjF fileListHead=&undefSymPod, fileListTail=&undefSymPod;
 
 void *symTbl = 0;
 
@@ -201,12 +213,8 @@ Sym		*found;
 				buf[len]=0;
 				strcpy( obj->name, buf );
 
-				/* append to list of objecs */
-				if (fileListTail) {
-					fileListTail->next = obj;
-				} else {
-					fileListHead = obj;
-				}
+				/* append to list of objects */
+				fileListTail->next = obj;
 				fileListTail = obj;
 
 #ifdef DEBUG
@@ -252,6 +260,8 @@ Sym		*found;
 					case 'D':
 					case 'T':
 					case 'R':
+					case 'G':
+					case 'C':
 							  {
 							  Export ex;
 							  obj->nexports++;
@@ -285,6 +295,33 @@ Sym		*found;
 	fixupObj(obj);
 	free(nsym);
 	return 0;
+}
+
+static void
+gatherDanglingUndefsAct(const void *pnode, const VISIT when, const int depth)
+{
+const Sym sym = *(const Sym*)pnode;
+	if ( (postorder == when || leaf == when) && ! sym->exportedBy) {
+		Export ex;
+		undefSymPod.nexports++;
+		undefSymPod.exports = realloc(undefSymPod.exports, sizeof(*undefSymPod.exports) * undefSymPod.nexports);
+		ex = &undefSymPod.exports[undefSymPod.nexports-1];
+		ex->sym  = sym;
+		ex->obj  = &undefSymPod;
+		export_set_weak(ex,0);
+		export_set_next(ex,0);
+	}
+}
+
+
+/* gather symbols which are defined nowhere and attach them
+ * to the export list of the 'special' object at the list head.
+ */
+void
+gatherDanglingUndefs()
+{
+	twalk(symTbl, gatherDanglingUndefsAct);
+	fixupObj(&undefSymPod);
 }
 
 /* semantics: caller must have asserted that
@@ -352,15 +389,16 @@ Import imp;
 	if ( imp ) {
 		printf("\n");
 		do {
-			depwalk(imp->obj, depPrint, 4);
+			depwalk(imp->obj, depPrint, (void*)4, 0);
 		} while ( imp = imp->peer );
 	} else {
 		printf(" NOBODY - (no dependencies)\n");
 	}
 }
 
-static DepWalkAction	depwalkAction = 0;
-static void				*depwalkClosure =0;
+static DepWalkAction	depwalkAction   = 0;
+static void				*depwalkClosure = 0;
+static int				depwalkMode     = 0;
 
 /* walk all objects depending on this one */
 static void
@@ -371,27 +409,64 @@ register Import imp;
 
 	if (depwalkAction)
 		depwalkAction(f,depth,depwalkClosure);
+
 	for ( i=0; i<f->nexports; i++ ) {
 		for (imp = f->exports[i].sym->importedFrom; imp; imp = imp->peer) {
+
+			assert( imp->obj != f );
+
 			if ( !imp->obj->work ) {
 				/* mark in use */
+#ifdef NWORK
+				printf("Linking %s between %s and %s\n", imp->obj->name, f->name, f->work ? f->work->name : "NIL"); 
+				imp->obj->work = f->work;
+				f->work        = imp->obj;
+#else
 				imp->obj->work = f;
+#endif
 				depwalk_rec(imp->obj, depth+1);
+#ifdef NWORK
+				if ( ! (depwalkMode & WALK_BUILD_LIST) ) {
+					f->work        = imp->obj->work;
+					imp->obj->work = 0;
+				}
+#else
 				imp->obj->work = 0;
+#endif
 			} /* else break circular dependency */
 		}
 	}
 }
 
 void
-depwalk(ObjF f, DepWalkAction action, void *closure)
+depwalk(ObjF f, DepWalkAction action, void *closure, int mode)
 {
-	f->work = (ObjF)1;
-	depwalkAction  = action;
+ObjF	tmp;
+int		depth = 0;
+	assert(f->work == 0 );
+
+	depwalkMode    = mode;
+	depwalkAction  = (depwalkMode & WALK_BUILD_LIST) ? 0 : action;
 	depwalkClosure = closure;
+
+#ifndef NWORK
+	f->work = 1;
+#endif
 	depwalk_rec(f, 0);
+#ifndef NWORK
 	f->work = 0;
+#endif
+	if (depwalkMode & WALK_BUILD_LIST) {
+		for (tmp = f; tmp; tmp = tmp->work) {
+			action(tmp, depth++, closure);
+		}
+		for (tmp = f; tmp; f = tmp) {
+			tmp     = f->work;
+			f->work = 0;
+		}
+	}
 }
+
 
 static void
 symTraceAct(const void *pnode, const VISIT when, const int depth)
@@ -432,6 +507,14 @@ int indent = (int)closure;
 	printf("%s\n",f->name);
 }
 
+void
+depPrintList(ObjF f, int d, void *closure)
+{
+	d = (int)closure;
+	while (d-- > 0) fputc(' ',stdout);
+	printf("  %s\n",f->name);
+}
+
 int
 main(int argc, char **argv)
 {
@@ -439,25 +522,37 @@ FILE	*feil=stdin;
 ObjF	*sets=0;
 ObjF	f;
 int		nsets=0;
-int		i;
+int		i,nfile;
 
-	if (argc > 1) {
-		if ( !(feil=fopen(argv[1],"r")) ) {
+	nfile = 1;
+
+
+	do {
+		if ( nfile < argc && !(feil=fopen(argv[nfile],"r")) ) {
 			perror("opening file");
 			exit(1);
 		}
+		if (scan_file(feil)) {
+			fprintf(stderr,"Error scanning %s\n", nfile < argc ? argv[nfile] : "<stdin>");
+			exit(1);
+		}
+	} while (++nfile < argc);
+
+	gatherDanglingUndefs();
+
+	printf("Looking for UNDEFINED symbols\n");
+	for (i=0; i<fileListHead->nexports; i++) {
+		trackSym(fileListHead->exports[i].sym);
 	}
 
-	if ( 0 == scan_file(feil) ) {
-		assert( 0 == checkObjPtrs() );
+	assert( 0 == checkObjPtrs() );
 
-		for (f=fileListHead; f; f=f->next) { 
-			if (!f->link.anchor) {
-				sets=realloc(sets,sizeof(*sets)*++nsets);
-				sets[nsets-1]  = f;
-				f->link.anchor = f;
-				link(f);
-			}
+	for (f=fileListHead; f; f=f->next) { 
+		if (!f->link.anchor) {
+			sets=realloc(sets,sizeof(*sets)*++nsets);
+			sets[nsets-1]  = f;
+			f->link.anchor = f;
+			link(f);
 		}
 	}
 
@@ -469,9 +564,11 @@ int		i;
 	}
 	twalk(symTbl, symTraceAct);
 
-	for (f=fileListHead; f; f=f->next) {
+	for (f=fileListHead->next; f; f=f->next) {
 		printf("\n\nDependencies ON object: ");
-		depwalk(f, depPrint, (void*)-4);
+		depwalk(f, depPrint, (void*)-4, 0);
+		printf("\nunified list: \n");
+		depwalk(f, depPrintList, 4, WALK_BUILD_LIST);
 	}
 	assert( 0 == checkObjPtrs() );
 }
