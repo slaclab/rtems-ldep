@@ -109,6 +109,10 @@ typedef struct LinkNodeRec {
 	ObjF	next;			/* next member of the link set */
 } LinkNodeRec;
 
+/*
+ * WARNING: DONT change the order of the fields, nor insert anything
+ *          without adapting initialization of the 'undefSymPod'
+ */
 typedef struct ObjFRec_ {
 	char		*name;		/* name of this object file */
 	ObjF		next;		/* linked list of all objects */
@@ -151,6 +155,12 @@ typedef struct DepPrintArgRec_ {
 #define TYPESZ  0
 #endif
 
+#ifdef __GNUC__
+#define INLINE __inline__
+#else
+#define INLINE
+#endif
+
 /* struct describing a symbol */
 typedef struct SymRec_ {
 	char	*name;			/* we point 'name' to a string and store the type in 'name[-1]' */
@@ -177,14 +187,14 @@ typedef struct XrefRec_ {
 /* inline routines to access 'BITFIELD' */
 
 /* set the 'next' pointer (BITFIELD member) */
-static __inline__ void xref_set_next(Xref e, Xref next)
+static INLINE void xref_set_next(Xref e, Xref next)
 {
 	e->multiuse &= XREF_FLAGS;
 	e->multiuse |= ((unsigned)next) & ~XREF_FLAGS;
 }
    
 /* set the 'weak' flag (BITFIELD member) */
-static __inline__ void xref_set_weak(Xref e, int weak)
+static INLINE void xref_set_weak(Xref e, int weak)
 {
 	if (weak)
 		e->multiuse |= XREF_FLG_WEAK;
@@ -280,8 +290,10 @@ static FILE *debugf, *logf;
  * anywhere else
  */
 static ObjFRec undefSymPod = {
-	"<UNDEFINED>",
-link: { anchor: &undefLinkSet },
+	"<UNDEFINED>",		/* name */
+	0,					/* next */
+	0,					/* lib  */
+	{ &undefLinkSet },	/* link */
 };
 
 /*
@@ -289,16 +301,16 @@ link: { anchor: &undefLinkSet },
  * referencing undefined symbols)
  */
 LinkSetRec appLinkSet   = {
-	name:	"Application",
-	set:	0,
+	"Application",
+	0,
 };
 LinkSetRec undefLinkSet = {
-	name:	"UNDEFINED",
-	set:	&undefSymPod,
+	"UNDEFINED",
+	&undefSymPod,
 };
 LinkSetRec optionalLinkSet = {
-	name:	"Optional",
-	set:	0
+	"Optional",
+	0
 };
 
 /* list of all known files */
@@ -321,7 +333,7 @@ void *symTbl = 0;
  * undefined symbols
  */
 
-static __inline__ ObjF
+static INLINE ObjF
 fileListFirst()
 {
 	/* skip the undefined pod */
@@ -597,7 +609,9 @@ Sym		*found;
 						int warn, override, nweak;
 
 						nweak= 'W' == type || 'V' == type;
+#ifdef __GNUC__
 #warning TODO weak symbols
+#endif
 
 						warn = ( 'U' != TYPE(*found) && 'U' != type );
 						
