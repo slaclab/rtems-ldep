@@ -145,6 +145,12 @@ typedef struct DepPrintArgRec_ {
 	FILE	*file;
 } DepPrintArgRec, *DepPrintArg;
 
+/* Argument for processFile() */
+typedef struct ProcTabRec_ {
+	char	*fname;
+	int		linkNotUnlink;
+} ProcTabRec, *ProcTab;
+
 
 /* access the symbol 'TYPE' embedded in its name string */
 #define TYPE(sym) (*((sym)->name - 1))
@@ -783,6 +789,8 @@ register Xref imp;
 
 	f->link.next = (f->link.anchor->set);
 	f->link.anchor->set = f;
+
+	return 0;
 }
 
 /* Dump info about a symbol to 'feil' */
@@ -1449,18 +1457,18 @@ static int myugc(int ch, char **pchpt, FILE *f)
 }
 
 /*
- * Unlink all files listed in the file 'fname' along with
+ * (Un)link all files listed in the file 'fname' along with
  * objects depending on them.
  *
  * RETURNS: 0 on success,
  *          NONZERO on failure:
- *             - list file not found
- *             - listed object not found
- *             - listed object member of Application link set
- *             - listed object member name needs more qualification
+ *             -1 list file not found
+ *             -2 listed object not found
+ *             -3 listed object member name needs more qualification
+ *             -4 listed object member of Application link set
  */
 int
-removeObjs(char *fname)
+processFile(ProcTab pt)
 {
 FILE *remf;
 char buf[MAXBUF+1];
@@ -1472,14 +1480,16 @@ char *comment;
 
 	buf[MAXBUF] = 'X'; /* tag end of buffer */
 
-	if ( ! (remf=fopen(fname,"r")) ) {
-		perror("opening removal list file");
+	if ( ! (remf=fopen(pt->fname,"r")) ) {
+		sprintf(buf,"opening list file '%s'", pt->fname);
+		perror(buf);
 		return -1;
 	}
 
 	fprintf(logf,
-			"Processing list of files ('%s') to unlink from %s link set\n",
-			fname,
+			"Processing list of files ('%s') to %slink from %s link set\n",
+			pt->fname,
+			pt->linkNotUnlink ? "" : "un",
 			optionalLinkSet.name);
 
 	line = 0;
@@ -1488,7 +1498,7 @@ char *comment;
 
 		if (!buf[MAXBUF]) {
 			fprintf(stderr,"Buffer overflow in %s (line %i)\n",
-							fname,
+							pt->fname,
 							line);
 			fclose(remf);
 			return -1;
@@ -1535,7 +1545,8 @@ fprintf(debugf,"Scanned '%s'\n",buf); continue;
 
 		if ( 0 == got ) {
 			fprintf(stderr,"Object '%s' not found!\n", buf);
-		} else if (got > 1) {
+			rval = -2;
+		} else if ( got > 1 ) {
 			fprintf(stderr,"Multiple occurrences of '%s':\n",buf);
 			for (i=0; i<got; i++) {
 				fputc(' ',stderr);
@@ -1544,12 +1555,17 @@ fprintf(debugf,"Scanned '%s'\n",buf); continue;
 				fputc('\n',stderr);
 			}
 			fprintf(stderr,"please be more specific!\n",buf);
+			rval = -3;
 		} else  {
-			if (unlinkObj(*pobj)) {
+			if ( pt->linkNotUnlink && 0 == (*pobj)->link.anchor ) {
+				(*pobj)->link.anchor = &optionalLinkSet;
+				sprintf(buf,"<SCRIPT>'%s'",pt->fname);
+				rval = linkObj( *pobj, buf );
+			} else if ( unlinkObj(*pobj) ) {
 				fprintf(stderr,"Object '%s' couldn't be removed; probably it's needed by the application\n", buf);
+				rval = -4;
 			}
 		}
-		rval = (got != 1);
 	}
 
 	fclose(remf);
@@ -1605,7 +1621,7 @@ usage(char *nm)
 char *strip = strrchr(nm,'/');
 	if (strip)
 		nm = strip+1;
-	fprintf(stderr,"\nUsage: %s [-adfhilmqsu] [-A main_symbol] [-r removal_list] [-o log_file] [-e script_file] [nm_files]\n\n", nm);
+	fprintf(stderr,"\nUsage: %s [-dfhilmqsux] [-A main_symbol] [-a addition_list] [-r removal_list] [-o log_file] [-e script_file] [nm_files]\n\n", nm);
 	fprintf(stderr,"   Object file dependency analysis; the input files must be\n");
 	fprintf(stderr,"   created with 'nm -g -fposix'.\n\n");
 	fprintf(stderr,"(This is ldep $Revision$ by Till Straumann <strauman@slac.stanford.edu>)\n\n");
@@ -1622,7 +1638,10 @@ char *strip = strrchr(nm,'/');
 	fprintf(stderr,"           (directly or indirectly) needed by the object defining 'main_symbol' is\n");
 	fprintf(stderr,"           mandatory.\n");
 	fprintf(stderr,"           NOTE: The first 'nm_file' is NOT treated special if this option is used.\n");
-	fprintf(stderr,"     -a:   when generating a script (see -e), only list the optional link set\n");
+	fprintf(stderr,"     -a:   add a list of objects from the link - name them, one per line, in\n");
+    fprintf(stderr,"           the file 'removal_list'\n");
+	fprintf(stderr,"           NOTE: multiple '-a' and '-r' options may be present. The respective files\n");
+	fprintf(stderr,"                 are processed in the order the options are given on the command line\n");
 	fprintf(stderr,"     -d:   show all module dependencies (huge amounts of data! -- use '-l', '-u')\n");
 	fprintf(stderr,"     -e:   on success, generate a linker script 'script_file' with EXTERN statements\n");
 	fprintf(stderr,"     -f:   be less paranoid when scanning symbols: accept 'local symbols' (map all\n");
@@ -1634,11 +1653,12 @@ char *strip = strrchr(nm,'/');
 	fprintf(stderr,"     -o:   log messages to 'log_file' instead of 'stdout' (default)\n");
 	fprintf(stderr,"     -q:   quiet; just build database and do basic checks\n");
 	fprintf(stderr,"     -r:   remove a list of objects from the link - name them, one per line, in\n");
-    fprintf(stderr,"           the file 'removal_list'\n");
+	fprintf(stderr,"           the file 'removal_list'\n");
 	fprintf(stderr,"           NOTE: if a mandatory object depends on an object to be removed, removal\n");
 	fprintf(stderr,"                 is rejected.\n");
 	fprintf(stderr,"     -s:   show all symbol info (huge amounts of data! -- use '-l', '-u')\n");
 	fprintf(stderr,"     -u:   log info about the unlinking process\n");
+	fprintf(stderr,"     -x:   when generating a script (see -e), only list the optional link set\n");
 }
 
 /* Primitive interactive command interpreter (database queries) */
@@ -1734,7 +1754,8 @@ FILE	*scrf         = 0;
 char	*scrn         = 0;
 ObjF	lastAppObj    = 0; 
 SymRec	mainSym       = {0};
-char	*removalList  = 0;
+ProcTab	procTab		  = 0;
+int		nProc         = 0;
 char	*mainName     = 0;
 int		options       = 0;
 int		i,nfile,ch;
@@ -1744,7 +1765,7 @@ Sym		*found;
 
 	logf = stdout;
 
-	while ( (ch=getopt(argc, argv, "aA:qhifsdmlur:o:e:")) >= 0 ) {
+	while ( (ch=getopt(argc, argv, "a:A:qhifsdmluxr:o:e:")) >= 0 ) {
 		switch (ch) { 
 			default: fprintf(stderr, "Unknown option '%c'\n",ch);
 					 exit(1);
@@ -1758,7 +1779,7 @@ Sym		*found;
 			break;
 			case 'l': verbose |= DEBUG_LINK;
 			break;
-			case 'a': options |= OPT_NO_APPSET;
+			case 'x': options |= OPT_NO_APPSET;
 			break;    
 			case 'u': verbose |= DEBUG_UNLINK;
 			break;
@@ -1772,7 +1793,15 @@ Sym		*found;
 			break;
 			case 'q': options |= OPT_QUIET;
 			break;
-			case 'r': removalList  = optarg;
+			case 'a': procTab = realloc(procTab, sizeof(*procTab) * (nProc+1));
+					  procTab[nProc].fname         = optarg;
+					  procTab[nProc].linkNotUnlink = 1;
+					  nProc++;
+			break;
+			case 'r': procTab = realloc(procTab, sizeof(*procTab) * (nProc+1));
+					  procTab[nProc].fname         = optarg;
+					  procTab[nProc].linkNotUnlink = 0;
+					  nProc++;
 			break;
 			case 'm': options |= OPT_MULTIDEFS;
 			break;
@@ -1890,8 +1919,8 @@ Sym		*found;
 	fprintf(logf,"Removing undefined symbols\n");
 	unlinkUndefs();
 
-	if (removalList) {
-		if (removeObjs(removalList))
+	for ( i=0; i<nProc; i++ ) {
+		if (processFile(&procTab[i]))
 			exit(1);
 	}
 
@@ -1917,6 +1946,8 @@ Sym		*found;
 		fclose(scrf);
 		fprintf(logf,"done.\n");
 	}
+
+	free(procTab);
 
 	return 0;
 }
