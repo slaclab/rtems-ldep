@@ -22,7 +22,7 @@
 #define DEBUG_WALK		8
 
 #define DEBUG			(8|4)
-#undef  NWORK
+#define NWORK
 
 typedef struct ObjFRec_		*ObjF;
 typedef struct SymRec_		*Sym;
@@ -151,11 +151,13 @@ char			*rval;
 
 #define MAXBUF	500
 
-#define XFMT(m)	FMT(m)
-#define FMT(max)	"%"#max"s%*[ \t]%c%*[^\n] \n"
+#define NMFMT(max)  "%"#max"s"
+#define XNMFMT(m)	NMFMT(m)
+#define ENDFMT		"%*[^\n]\n"
+//#define FMT(max)	"%"#max"s%*[ \t]%c%*[^\n] \n"
 
-#define THEFMT XFMT(MAXBUF)
-
+#define THEFMT 		XNMFMT(MAXBUF)"%*[ \t]%c"ENDFMT
+#define THENMFMT	XNMFMT(MAXBUF)ENDFMT
 
 /* a "special" object exporting all symbols not defined
  * anywhere else
@@ -171,6 +173,7 @@ ObjF optionalLinkSet = 0;
 
 ObjF fileListHead=&undefSymPod, fileListTail=&undefSymPod;
 Lib  libListHead=0, libListTail=0;
+ObjF *fileListIndex = 0;
 
 static int	numFiles = 0;
 static int  numLibs  = 0;
@@ -250,6 +253,28 @@ int i;
 	obj->lib  = l;
 }
 
+static char *
+splitName(char *name, char **ppo, char **ppc)
+{
+char	*rval = name;
+int		l     = strlen(name);
+
+	*ppo = 0;
+
+	/* is it part of a library ? */
+	if ( l>0 && ']'== *(*ppc=name+(l-1)) ) {
+		if ( !(*ppo = strrchr(name,'[')) ) {
+			fprintf(stderr,"ERROR: misformed archive member name: %s\n",name);
+			fprintf(stderr,"       'library[member]' expected\n");
+			return 0;
+		}
+		**ppo  = 0;
+		**ppc  = 0;
+		rval =  (*ppo)+1;
+	}
+	return rval;
+}
+
 static ObjF
 createObj(char *name)
 {
@@ -257,19 +282,11 @@ ObjF obj;
 int  l = strlen(name);
 char *po,*pc,*objn;
 
-	objn = name;
-	po   = 0;
 	/* is it part of a library ? */
-	if ( l>0 && ']'== *(pc=name+(l-1)) ) {
-		if ( !(po = strrchr(name,'[')) ) {
-			fprintf(stderr,"ERROR: misformed archive member name: %s\n",name);
-			fprintf(stderr,"       'library[member]' expected\n");
-			exit(1);
-		}
-		*po  = 0;
-		*pc  = 0;
-		objn =  po+1;
-	}
+	objn = splitName(name, &po, &pc);
+
+	if (!objn)
+		exit(1); /* found an ill-formed name; fatal */
 
 	assert( obj = calloc(1, sizeof(*obj)) );
 
@@ -700,7 +717,8 @@ static int				depwalkMode     = 0;
 
 #define DO_EXPORTS (depwalkMode & WALK_EXPORTS)
 
-#define BUSY ((ObjF)depwalk) /* just some address */
+#define BUSY 		((ObjF)depwalk) /* just some address */
+#define MATCH_ANY	((Lib)depwalk)	/* just some address */
 
 static void
 depwalk_rec(ObjF f, int depth)
@@ -889,10 +907,166 @@ DepPrintArg arg = (DepPrintArg)closure;
 	printf("%s\n",f->name);
 }
 
+static int
+objcmp(const void *a, const void *b)
+{
+ObjF	obja=*(ObjF*)a;
+ObjF	objb=*(ObjF*)b;
+int		rval;
+
+	if (rval = strcmp(obja->name, objb->name))
+		return rval;
+
+	if (MATCH_ANY == obja->lib  || MATCH_ANY == objb->lib)
+		return 0;
+
+	/* matching object names; compare libraries */
+	if (obja->lib) {
+		if (objb->lib)
+			return strcmp(obja->lib->name, objb->lib->name);
+		else
+			return 1; /* a has library name, b has not b<a */
+	}
+	return objb->lib ? -1 : 0;
+}
+
+ObjF *
+fileListBuildIndex()
+{
+ObjF *rval;
+ObjF f;
+int  i;
+
+	assert( rval = malloc(numFiles * sizeof(*rval)) );
+	for ( i=0, f = fileListHead; f; i++, f=f->next) {
+		rval[i] = f;
+	}
+	qsort(rval, numFiles, sizeof(*rval), objcmp);
+	return rval;
+}
+
+/* return the number of matches found.
+ * A pointer to the first match in the index
+ * array is returned in *pfound.
+ *
+ * 'name' is temporarily edited.
+ */
+int
+fileListFind(char *name, ObjF **pfound)
+{
+char	*objn, *po, *pc;
+ObjFRec	frec = {0};
+ObjF	f    = &frec;
+Lib		l;
+ObjF	*found, *end;
+int		rval = 0;
+
+	if ( ! (objn=splitName(name,&po,&pc)) ) {
+		return 0; /* ill-formed name */
+	}
+
+	f->name = objn;
+
+	if (po) {
+		for (l=libListHead; l; l=l->next) {
+			if ( !strcmp(l->name, name) ) {
+				break;
+			}
+		}
+		if (!l) {
+			goto cleanup;
+		}
+		f->lib = l;
+	} else  {
+		f->lib = MATCH_ANY;
+	}
+
+	if ( ! (found = bsearch(&f, fileListIndex, numFiles, sizeof(f), objcmp)) )
+		goto cleanup;
+
+	/* find all matches */
+	end = found;
+	while ( ++end < fileListIndex + numFiles && !objcmp(&f,end) )
+		/* nothing else to do */;
+
+	while (--found >= fileListIndex && !objcmp(&f, found))
+		/* nothing else to do */;
+
+	found++;
+
+	if (pfound)
+		*pfound = found;
+
+	rval = end-found;
+
+cleanup:
+	if (po) {
+		*po = '[';
+		*pc = ']';
+	}
+	return rval;
+}
+
+int
+removeObjs(char *fname)
+{
+FILE *remf;
+char buf[MAXBUF+1];
+int  got,i;
+int  line;
+ObjF *pobj;
+
+	buf[MAXBUF] = 'X'; /* tag end of buffer */
+
+	if ( ! (remf=fopen(fname,"r")) ) {
+		perror("opening removal list file");
+		return -1;
+	}
+
+	line = 0;
+	while ( EOF != (got=fscanf(remf,THENMFMT,buf)) ) {
+		line++;
+		if (!buf[MAXBUF]) {
+			fprintf(stderr,"Buffer overflow in %s (line %i)\n",
+							fname,
+							line);
+			fclose(remf);
+			return -1;
+		}
+
+		if (got<1)
+			continue;
+
+		got = fileListFind(buf, &pobj);
+
+		if ( 0 == got ) {
+			fprintf(stderr,"Object '%s' not found, skipping...", buf);
+		} else if (got > 1) {
+			fprintf(stderr,"Multiple occurrences of '%s':\n",buf);
+			for (i=0; i<got; i++) {
+				Lib l = pobj[i]->lib;
+				fprintf(stderr,
+						l ? "  %s[%s]\n" : "  %s%s\n",
+						l ? l->name : "",
+						pobj[i]->name);
+			}
+			fprintf(stderr,"please be more specific; skipping '%s'\n",buf);
+		} else  {
+			if (unlinkObj(*pobj)) {
+				fprintf(stderr,"Object '%s' couldn't be removed; probably it's needed by the application", buf);
+			}
+		}
+		fputc('\n',stderr);
+	}
+
+	fclose(remf);
+	return 0;
+}
+
 static void 
 usage(char *nm)
 {
-	fprintf(stderr,"Usage: %s [-qh] [filenames]\n", nm);
+	fprintf(stderr,"Usage: %s [-qhsd] [-r removal_list] [filenames]\n", nm);
 	fprintf(stderr,"   Object file dependency analysis; the input files must be\n");
 	fprintf(stderr,"   created with 'nm -g -fposix'.\n\n");
 	fprintf(stderr,"   Options:\n");
@@ -900,6 +1074,7 @@ usage(char *nm)
 	fprintf(stderr,"     -s:   show all symbol info\n");
 	fprintf(stderr,"     -d:   show all module dependencies\n");
 	fprintf(stderr,"     -h:   print this message.\n");
+	fprintf(stderr,"     -r:   remove a list of objects from the link\n");
 }
 
 int
@@ -912,9 +1087,10 @@ int		i,nfile,ch;
 int		quiet = 0;
 int		showSyms = 0;
 int		showDeps = 0;
+char	*removal_list=0;
 
 
-	while ( (ch=getopt(argc, argv, "qhsd")) >= 0 ) {
+	while ( (ch=getopt(argc, argv, "qhsdr:")) >= 0 ) {
 		switch (ch) { 
 			default: fprintf(stderr, "Unknown option '%c'\n",ch);
 					 exit(1);
@@ -928,6 +1104,8 @@ int		showDeps = 0;
 			case 's': showSyms = 1;
 			break;
 			case 'q': quiet = 1;
+			break;
+			case 'r': removal_list = optarg;
 			break;
 		}
 	}
@@ -952,6 +1130,8 @@ int		showDeps = 0;
 	} while (++nfile < argc);
 
 	gatherDanglingUndefs();
+
+	fileListIndex = fileListBuildIndex();
 
 	printf("Looking for UNDEFINED symbols\n");
 	for (i=0; i<fileListHead->nexports; i++) {
@@ -999,5 +1179,12 @@ int		showDeps = 0;
 	printf("Removing undefined symbols\n");
 	unlinkUndefs();
 
+	if (removal_list) {
+		if (removeObjs(removal_list))
+			exit(1);
+	}
+
 	assert( 0 == checkObjPtrs() );
+
+	return 0;
 }
