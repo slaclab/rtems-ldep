@@ -151,6 +151,8 @@ extern ObjF appLinkSet;
 extern ObjF undefLinkSet;
 extern ObjF optionalLinkSet;
 
+static FILE *debugf, *logf;
+
 #define STRCHUNK	10000
 
 /* string space allocator */
@@ -399,7 +401,7 @@ Sym		*found;
 				obj = createObj(buf);
 
 #if DEBUG & DEBUG_SCAN
-				printf("In FILE: '%s'\n", buf);
+				fprintf(debugf,"In FILE: '%s'\n", buf);
 #endif
 			break;
 
@@ -433,7 +435,7 @@ Sym		*found;
 				assert( found = (Sym*) tsearch(nsym, &symTbl, symcmp) );
 				if ( *found == nsym ) {
 #if DEBUG & DEBUG_TREE
-					printf("Adding new symbol %s (found %p, sym %p)\n",(*found)->name, found, *found);
+					fprintf(debugf,"Adding new symbol %s (found %p, sym %p)\n",(*found)->name, found, *found);
 #endif
 					nsym->name = stralloc(strlen(buf) + 1 + TYPESZ) + TYPESZ; /* store the type in name[-1] */
 					strcpy(nsym->name, buf);
@@ -443,7 +445,7 @@ Sym		*found;
 					nsym = 0;
 				} else {
 #if DEBUG & DEBUG_TREE
-					printf("Found existing symbol %s (found %p, sym %p)\n",(*found)->name, found, *found);
+					fprintf(debugf,"Found existing symbol %s (found %p, sym %p)\n",(*found)->name, found, *found);
 
 #endif
 
@@ -457,8 +459,8 @@ Sym		*found;
 						warn = ( 'U' != TYPE(*found) && 'U' != type );
 						
 				 		if (warn) {
-							printf("Warning: type mismatch between multiply defined symbols\n");
-					    	printf("         %s: known as %c, is now %c\n:", (*found)->name, TYPE(*found), type);
+							fprintf(stderr,"Warning: type mismatch between multiply defined symbols\n");
+					    	fprintf(stderr,"         %s: known as %c, is now %c\n", (*found)->name, TYPE(*found), type);
 						}
 
 						override = ('U' == TYPE(*found));
@@ -521,7 +523,7 @@ Sym		*found;
 					break;
 				}
 #if DEBUG & DEBUG_SCAN
-				printf("\t '%c' %s\n",type,buf);
+				fprintf(debugf,"\t '%c' %s\n",type,buf);
 #endif
 			break;
 		}
@@ -613,23 +615,23 @@ DepPrintArgRec	arg;
 
 	arg.depthIndent = 2;
 
-	printf("What I know about Symbol '%s':\n", s->name);
-	printf("  Defined in object: ");
+	fprintf(logf,"What I know about Symbol '%s':\n", s->name);
+	fprintf(logf,"  Defined in object: ");
 	if ( ! (ex = s->exportedBy) ) {
-		printf(" NOWHERE!!!\n");
+		fprintf(logf," NOWHERE!!!\n");
 	} else {
-		printf("%s%s\n", ex->obj->name, XREF_WEAK(ex) ? " (WEAK)" : "");
+		fprintf(logf,"%s%s\n", ex->obj->name, XREF_WEAK(ex) ? " (WEAK)" : "");
 		while ( ex=XREF_NEXT(ex) ) {
-			printf("      AND in object: %s%s\n", ex->obj->name, XREF_WEAK(ex) ? " (WEAK)" : "");
+			fprintf(logf,"      AND in object: %s%s\n", ex->obj->name, XREF_WEAK(ex) ? " (WEAK)" : "");
 		}
 	}
 
 	if ( (ex=s->exportedBy) ) {
-		printf("  Depending on objects (triggers linkage of):");
+		fprintf(logf,"  Depending on objects (triggers linkage of):");
 		if (0 == ex->obj->nimports) {
-			printf(" NONE\n");
+			fprintf(logf," NONE\n");
 		} else {
-			printf("\n");
+			fprintf(logf,"\n");
 			arg.minDepth    = 1;
 			arg.indent      = 0;
 			arg.depthIndent = -1;
@@ -638,12 +640,12 @@ DepPrintArgRec	arg;
 		}
 	}
 
-	printf("  Needed by objects (but host object may be needed due to other symbols):");
+	fprintf(logf,"  Needed by objects (but host object may be needed due to other symbols):");
 
 	imp = s->importedFrom;
 
 	if ( imp ) {
-		printf("\n");
+		fprintf(logf,"\n");
 		arg.minDepth    = 0;
 		arg.indent      = 4;
 		arg.depthIndent = -1;
@@ -652,7 +654,7 @@ DepPrintArgRec	arg;
 			depwalkListRelease(imp->obj);
 		} while ( imp = XREF_NEXT(imp) );
 	} else {
-		printf(" NONE\n");
+		fprintf(logf," NONE\n");
 	}
 }
 
@@ -664,7 +666,7 @@ int		i;
 ObjF	*pl;
 
 #if DEBUG & DEBUG_UNLINK
-	printf("\n  removing object '%s'... ", f->name);
+	fprintf(debugf,"\n  removing object '%s'... ", f->name);
 #endif
 
 	for (i=0, imp=f->imports; i<f->nimports; i++, imp++) {
@@ -694,7 +696,7 @@ ObjF	*pl;
 	f->link.next   = 0;
 	f->link.anchor = 0;
 #if DEBUG & DEBUG_UNLINK
-	printf("OK\n");
+	fprintf(debugf,"OK\n");
 #endif
 }
 
@@ -704,7 +706,7 @@ checkSysLinkSet(ObjF f, int depth, void *closure)
 	if ( f->link.anchor == &appLinkSet ) {
 #if DEBUG & DEBUG_UNLINK
 		if ( ! *(int*)closure )
-			printf("  --> rejected because '%s' is needed by app", f->name);
+			fprintf(debugf,"  --> rejected because '%s' is needed by app", f->name);
 #endif
 		*(int*)closure = 1;
 	}
@@ -756,7 +758,7 @@ ObjF	q = &undefSymPod;
 
 	for (i=0, ex=q->exports; i<q->nexports; i++,ex++) {
 #if DEBUG & DEBUG_UNLINK
-		printf("removing objects depending on '%s'...", ex->sym->name);
+		fprintf(debugf,"removing objects depending on '%s'...", ex->sym->name);
 #endif
 		while (ex->sym->importedFrom && 0==unlinkObj(ex->sym->importedFrom->obj))
 			/* nothing else to do */;
@@ -765,14 +767,14 @@ ObjF	q = &undefSymPod;
 			p = ex->sym->importedFrom;
 			do {
 #if DEBUG & DEBUG_UNLINK
-				printf("\n  skipping system dependeny; object '%s'\n",p->obj->name);
+				fprintf(debugf,"\n  skipping system dependeny; object '%s'\n",p->obj->name);
 #endif
 				while ( (n=XREF_NEXT(p)) && 0 == unlinkObj(n->obj) )
 					/* nothing else to do */;
 			} while ( p = n ); /* reached a system module; skip */
 		}
 #if DEBUG & DEBUG_UNLINK
-		printf("done.\n");
+		fprintf(debugf,"done.\n");
 #endif
 	}
 	return 0;
@@ -810,7 +812,7 @@ register Xref ref;
 			if ( !ref->obj->work ) {
 				/* mark in use */
 #ifdef NWORK
-/*				printf("Linking %s between %s and %s\n", ref->obj->name, f->name, f->work && f->work != BUSY ? f->work->name : "NIL");    */
+/*				fprintf(debugf,"Linking %s between %s and %s\n", ref->obj->name, f->name, f->work && f->work != BUSY ? f->work->name : "NIL");    */
 				ref->obj->work = f->work;
 				f->work        = ref->obj;
 				assert( 0 == checkCircWorkList(f) );
@@ -923,13 +925,13 @@ ObjF	f;
 		int ii;
 		for (ii=0; ii<f->nexports; ii++) {
 			if (f->exports[ii].obj != f) {
-				printf("%s %ith export obj pointer corrupted\n", f->name, ii);
+				fprintf(stderr,"%s %ith export obj pointer corrupted\n", f->name, ii);
 				err++;
 			}
 		}
 		for (ii=0; ii<f->nimports; ii++) {
 			if (f->imports[ii].obj != f) {
-				printf("%s %ith import obj pointer corrupted\n", f->name, ii);
+				fprintf(stderr,"%s %ith import obj pointer corrupted\n", f->name, ii);
 				err++;
 			}
 		}
@@ -973,7 +975,7 @@ DepPrintArg arg = (DepPrintArg)closure;
 	d += arg->indent;
 	while (d-- > 0)
 		fputc(' ',stdout);
-	printf("%s\n",f->name);
+	fprintf(logf,"%s\n",f->name);
 }
 
 static int
@@ -1039,7 +1041,7 @@ int		rval = 0;
 
 				if ( !isCommon) {
 					rval++;
-					printf("WARNING: Name Clash Detected; symbol '%s'"
+					fprintf(logf,"WARNING: Name Clash Detected; symbol '%s'"
 #ifdef TYPE
 					   " (type '%c')"
 #endif
@@ -1052,9 +1054,9 @@ int		rval = 0;
 				}
 				while (r) {
 					if (!isCommon) {
-						printf("  in '");
+						fprintf(logf,"  in '");
 						printObjName(stdout,r->obj);
-						printf("'%s\n", XREF_WEAK(r) ? " (WEAK [not implemented yet])" : "");
+						fprintf(logf,"'%s\n", XREF_WEAK(r) ? " (WEAK [not implemented yet])" : "");
 					}
 					r->obj->work = BUSY;
 					r = XREF_NEXT(r);
@@ -1189,7 +1191,7 @@ ObjF *pobj;
 static void 
 usage(char *nm)
 {
-	fprintf(stderr,"Usage: %s [-qhsd] [-r removal_list] [filenames]\n", nm);
+	fprintf(stderr,"Usage: %s [-qhsdm] [-r removal_list] [-o log_file] [filenames]\n", nm);
 	fprintf(stderr,"   Object file dependency analysis; the input files must be\n");
 	fprintf(stderr,"   created with 'nm -g -fposix'.\n\n");
 	fprintf(stderr,"   Options:\n");
@@ -1197,8 +1199,9 @@ usage(char *nm)
 	fprintf(stderr,"     -s:   show all symbol info\n");
 	fprintf(stderr,"     -d:   show all module dependencies\n");
 	fprintf(stderr,"     -h:   print this message.\n");
-	fprintf(stderr,"     -r:   remove a list of objects from the link\n");
+	fprintf(stderr,"     -r:   remove a list of objects from the link - name them, one per line, in 'removal_list'\n");
 	fprintf(stderr,"     -m:   check for symbols defined in multiple files\n");
+	fprintf(stderr,"     -o:   log messages to 'log_file'\n");
 }
 
 int
@@ -1214,8 +1217,9 @@ int		showDeps = 0;
 int		multipleDefs = 0;
 char	*removalList = 0;
 
+	logf = debugf = stdout;
 
-	while ( (ch=getopt(argc, argv, "qhsdmr:")) >= 0 ) {
+	while ( (ch=getopt(argc, argv, "qhsdmr:o:")) >= 0 ) {
 		switch (ch) { 
 			default: fprintf(stderr, "Unknown option '%c'\n",ch);
 					 exit(1);
@@ -1233,6 +1237,12 @@ char	*removalList = 0;
 			case 'r': removalList = optarg;
 			break;
 			case 'm': multipleDefs = 1;
+			break;
+			case 'o':
+				if ( !(logf=fopen(optarg,"w")) ) {
+					perror("opening log file");
+					exit(1);
+				}
 			break;
 		}
 	}
@@ -1260,7 +1270,7 @@ char	*removalList = 0;
 
 	fileListIndex = fileListBuildIndex();
 
-	printf("Looking for UNDEFINED symbols\n");
+	fprintf(logf,"Looking for UNDEFINED symbols\n");
 	for (i=0; i<fileListHead->nexports; i++) {
 		trackSym(fileListHead->exports[i].sym);
 	}
@@ -1277,7 +1287,7 @@ char	*removalList = 0;
 	}
 
 	if (quiet) {
-		printf("OK, that's it for now\n");
+		fprintf(logf,"OK, that's it for now\n");
 		exit(0);
 	}
 
@@ -1292,10 +1302,10 @@ char	*removalList = 0;
 				arg.depthIndent = 2;
 #if 0
 			/* this recursion can become VERY deep */
-			printf("\n\nDependencies ON object: ");
+			fprintf(logf,"\n\nDependencies ON object: ");
 			depwalk(f, depPrint, (void*)&arg, WALK_EXPORTS);
 #endif
-			printf("\nFlat dependency list for objects requiring: %s\n", f->name);
+			fprintf(logf,"\nFlat dependency list for objects requiring: %s\n", f->name);
 			arg.indent      = 0;
 			arg.depthIndent = -1;
 			depwalk(f, depPrint, (void*)&arg, WALK_EXPORTS | WALK_BUILD_LIST);
@@ -1303,7 +1313,7 @@ char	*removalList = 0;
 		}
 	}
 
-	printf("Removing undefined symbols\n");
+	fprintf(logf,"Removing undefined symbols\n");
 	unlinkUndefs();
 
 	if (removalList) {
@@ -1312,13 +1322,13 @@ char	*removalList = 0;
 	}
 
 	if (multipleDefs) {
-		printf("Checking for multiply defined symbols in the application link set:\n");
+		fprintf(logf,"Checking for multiply defined symbols in the application link set:\n");
 		checkMultipleDefs(appLinkSet);
 		if (optionalLinkSet) {
-			printf("OK\nChecking for multiply defined symbols in the optional link set:\n");
+			fprintf(logf,"OK\nChecking for multiply defined symbols in the optional link set:\n");
 			checkMultipleDefs(optionalLinkSet);
 		}
-		printf("OK\n");
+		fprintf(logf,"OK\n");
 	}
 
 	assert( 0 == checkObjPtrs() );
