@@ -37,33 +37,39 @@
 #define DEBUG_UNLINK	4
 #define DEBUG_WALK		8
 
-#define DEBUG			(1)
+#define DEBUG			(4)
 #define NWORK
 
 typedef struct ObjFRec_		*ObjF;
 typedef struct SymRec_		*Sym;
 typedef struct XrefRec_		*Xref;
-typedef struct LinkRec_		*LinkSet;
+typedef struct LinkSetRec_	*LinkSet;
 typedef struct LibRec_		*Lib;
 
-typedef struct LinkRec {
-	ObjF	*anchor;
+
+typedef struct LinkSetRec_ {
+	char	*name;
+	ObjF	set;
+} LinkSetRec;
+
+typedef struct LinkNodeRec {
+	LinkSet	anchor;
 	ObjF	next;
-} LinkRec;
+} LinkNodeRec;
 
 typedef struct ObjFRec_ {
-	char	*name;		/* name of this object file */
-	ObjF	next;		/* linked list of all objects */
-	Lib		lib;		/* libary we're part of or NULL */
-	LinkRec link; 		/* link set */
-	ObjF	work;		/* temp pointer to do work */
+	char		*name;		/* name of this object file */
+	ObjF		next;		/* linked list of all objects */
+	Lib			lib;		/* libary we're part of or NULL */
+	LinkNodeRec link; 		/* link set */
+	ObjF		work;		/* temp pointer to do work */
 #ifndef NWORK
-	ObjF	work1;
+	ObjF		work1;
 #endif
-	int		nexports;
-	Xref	exports;	/* symbols exported by this object */
-	int		nimports;
-	Xref	imports;	/* symbols exported by this object */
+	int			nexports;
+	Xref		exports;	/* symbols exported by this object */
+	int			nimports;
+	Xref		imports;	/* symbols exported by this object */
 } ObjFRec;
 
 typedef struct LibRec_ {
@@ -147,9 +153,9 @@ int  checkCircWorkList(ObjF f);
 void depwalkListRelease(ObjF f);
 void workListIterate(ObjF f, DepWalkAction action, void *closure);
 
-extern ObjF appLinkSet;
-extern ObjF undefLinkSet;
-extern ObjF optionalLinkSet;
+extern LinkSetRec appLinkSet;
+extern LinkSetRec undefLinkSet;
+extern LinkSetRec optionalLinkSet;
 
 static FILE *debugf, *logf;
 
@@ -193,13 +199,29 @@ static ObjFRec undefSymPod = {
 link: { anchor: &undefLinkSet },
 };
 
-ObjF appLinkSet   = 0;
-ObjF undefLinkSet = &undefSymPod;
-ObjF optionalLinkSet = 0;
+LinkSetRec appLinkSet   = {
+	name:	"Application",
+	set:	0,
+};
+LinkSetRec undefLinkSet = {
+	name:	"UNDEFINED",
+	set:	&undefSymPod,
+};
+LinkSetRec optionalLinkSet = {
+	name:	"Optional",
+	set:	0
+};
 
 ObjF fileListHead=&undefSymPod, fileListTail=&undefSymPod;
 Lib  libListHead=0, libListTail=0;
 ObjF *fileListIndex = 0;
+
+static __inline__ ObjF
+fileListFirst()
+{
+	/* skip the undefined pod */
+	return fileListHead ? fileListHead->next : 0;
+}
 
 static int	numFiles = 0;
 static int  numLibs  = 0;
@@ -573,7 +595,7 @@ gatherDanglingUndefs()
  */
 
 int
-linkObj(ObjF f)
+linkObj(ObjF f, char *symname)
 {
 register int i;
 register Xref imp;
@@ -597,13 +619,13 @@ register Xref imp;
 			ObjF	dep= (*found)->exportedBy->obj;
 			if ( f->link.anchor && !dep->link.anchor ) {
 				dep->link.anchor = f->link.anchor;
-				linkObj(dep);
+				linkObj(dep,(*found)->name);
 			}
 		}
 	}
 
-	f->link.next = *(f->link.anchor);
-	*f->link.anchor = f;
+	f->link.next = (f->link.anchor->set);
+	f->link.anchor->set = f;
 }
 
 void
@@ -689,7 +711,7 @@ ObjF	*pl;
 	}
 
 	/* remove this object from its linkset */
-	for (pl = f->link.anchor; *pl && (*pl != f); pl = &((*pl)->link.next) )
+	for (pl = &f->link.anchor->set; *pl && (*pl != f); pl = &((*pl)->link.next) )
 		/* do nothing else */;
 	assert( *pl );
 	*pl = f->link.next;
@@ -1018,13 +1040,18 @@ int  i;
 
 /* check for multiply define symbols in the link set of an object */
 int
-checkMultipleDefs(ObjF f)
+checkMultipleDefs(LinkSet s)
 {
+ObjF	f;
 int		i;
 Xref	r;
 int		rval = 0;
-	assert( f->link.anchor );
-	for ( f = *(f->link.anchor); f; f=f->link.next ) {
+
+	fprintf(logf,
+			"Checking for multiply defined symbols in the %s link set:\n",
+			s->name);
+
+	for ( f = s->set; f; f=f->link.next ) {
 		
 		if ( BUSY == f->work )
 			continue;
@@ -1067,6 +1094,8 @@ int		rval = 0;
 
 	for ( f = fileListHead; f; f=f->next )
 		f->work = 0;
+
+	fprintf(logf,"OK\n");
 
 	return rval;
 }
@@ -1188,10 +1217,43 @@ ObjF *pobj;
 	return 0;
 }
 
+static int
+writeLinkSet(FILE *feil, LinkSet s, char *title)
+{
+ObjF	f = s->set;
+int		n;
+
+	if ( !f )
+		return 0;
+
+	if (title)
+		fprintf(feil,"/* ----- %s Link Set ----- */\n\n", title);
+
+	for ( ; f; f = f->next ) {
+		fprintf(feil,"/* "); printObjName(feil,f); fprintf(feil,": */\n");
+		for ( n = 0; n < f->nexports; n++ ) {
+			fprintf(feil,"EXTERN( %s )\n", f->exports[n].sym->name);
+		}
+	}
+}
+
+/* Generate a linker script with external references to enforce linking the
+ * application and optional link sets
+ */
+int
+writeScript(FILE *feil, int optionalOnly)
+{
+	if ( !optionalOnly )
+		writeLinkSet(feil, &appLinkSet, "Application");
+
+	writeLinkSet(feil, &optionalLinkSet, "Optional");
+	return 0;
+}
+
 static void 
 usage(char *nm)
 {
-	fprintf(stderr,"Usage: %s [-qhsdm] [-r removal_list] [-o log_file] [filenames]\n", nm);
+	fprintf(stderr,"Usage: %s [-qhsdm] [-r removal_list] [-o log_file] [-l script_file] [filenames]\n", nm);
 	fprintf(stderr,"   Object file dependency analysis; the input files must be\n");
 	fprintf(stderr,"   created with 'nm -g -fposix'.\n\n");
 	fprintf(stderr,"   Options:\n");
@@ -1202,14 +1264,17 @@ usage(char *nm)
 	fprintf(stderr,"     -r:   remove a list of objects from the link - name them, one per line, in 'removal_list'\n");
 	fprintf(stderr,"     -m:   check for symbols defined in multiple files\n");
 	fprintf(stderr,"     -o:   log messages to 'log_file'\n");
+	fprintf(stderr,"     -l:   on success, generate a linker script 'script_file'\n");
 }
 
 int
 main(int argc, char **argv)
 {
-FILE	*feil=stdin;
+FILE	*feil = stdin;
+FILE	*scrf = 0;
+char	*scrn = 0;
 ObjF	f, lastAppObj=0; 
-ObjF	*linkSet;
+LinkSet	linkSet;
 int		i,nfile,ch;
 int		quiet = 0;
 int		showSyms = 0;
@@ -1219,7 +1284,7 @@ char	*removalList = 0;
 
 	logf = debugf = stdout;
 
-	while ( (ch=getopt(argc, argv, "qhsdmr:o:")) >= 0 ) {
+	while ( (ch=getopt(argc, argv, "qhsdmr:o:l:")) >= 0 ) {
 		switch (ch) { 
 			default: fprintf(stderr, "Unknown option '%c'\n",ch);
 					 exit(1);
@@ -1243,6 +1308,8 @@ char	*removalList = 0;
 					perror("opening log file");
 					exit(1);
 				}
+			break;
+			case 'l': scrn = optarg;
 			break;
 		}
 	}
@@ -1277,10 +1344,10 @@ char	*removalList = 0;
 
 	assert( 0 == checkObjPtrs() );
 
-	for ( f=fileListHead, linkSet = &appLinkSet ; f; f=f->next) { 
+	for ( f=fileListFirst(), linkSet = &appLinkSet ; f; f=f->next) { 
 		if (!f->link.anchor) {
 			f->link.anchor = linkSet;
-			linkObj(f);
+			linkObj(f, 0);
 		}
 		if ( f==lastAppObj )
 			linkSet = &optionalLinkSet;	
@@ -1295,7 +1362,7 @@ char	*removalList = 0;
 		twalk(symTbl, symTraceAct);
 
 	if (showDeps) {
-			for (f=fileListHead->next; f; f=f->next) {
+			for (f=fileListFirst(); f; f=f->next) {
 			DepPrintArgRec arg;
 				arg.minDepth    =  0;
 				arg.indent      = -4;
@@ -1322,16 +1389,23 @@ char	*removalList = 0;
 	}
 
 	if (multipleDefs) {
-		fprintf(logf,"Checking for multiply defined symbols in the application link set:\n");
-		checkMultipleDefs(appLinkSet);
-		if (optionalLinkSet) {
-			fprintf(logf,"OK\nChecking for multiply defined symbols in the optional link set:\n");
-			checkMultipleDefs(optionalLinkSet);
-		}
-		fprintf(logf,"OK\n");
+		checkMultipleDefs(&appLinkSet);
+		checkMultipleDefs(&optionalLinkSet);
 	}
 
 	assert( 0 == checkObjPtrs() );
+
+	if ( scrn ) {
+		fprintf(logf,"Writing linker script to '%s'...", scrn);
+		if ( !(scrf = fopen(scrn,"w")) ) {
+			perror("opening script file");
+			fprintf(logf,"opening file failed.\n");
+			exit (1);
+		}
+		writeScript(scrf,0);
+		fclose(scrf);
+		fprintf(logf,"done.\n");
+	}
 
 	return 0;
 }
