@@ -37,7 +37,7 @@
 #define DEBUG_UNLINK	4
 #define DEBUG_WALK		8
 
-#define DEBUG			(8|4)
+#define DEBUG			(1)
 #define NWORK
 
 typedef struct ObjFRec_		*ObjF;
@@ -73,8 +73,16 @@ typedef struct LibRec_ {
 	ObjF	*files;		/* pointer array of library members */
 } LibRec;
 
+#define TYPE(sym) (*((sym)->name - 1))
+
+#ifdef  TYPE
+#define TYPESZ	1
+#else
+#define TYPESZ  0
+#endif
+
 typedef struct SymRec_ {
-	char	*name;
+	char	*name;		/* we point 'name' to a string and store the type in 'name[-1]' */
 	Xref	exportedBy;
 	Xref	importedFrom;
 } SymRec;
@@ -236,6 +244,7 @@ Lib	rval;
 
 	assert( rval = calloc(1, sizeof(*rval)) );
 	assert( rval->name = stralloc(strlen(name) + 1) );
+	strcpy( rval->name, name );
 	if (libListTail)
 		libListTail->next = rval;
 	else
@@ -295,7 +304,16 @@ static int
 printObjName(FILE *feil, ObjF f)
 {
 Lib l = f->lib;
-	return fprintf(feil, l ? "%s[%s]" : "%s%s", l ? l->name : "", f->name);
+char *lname = "";
+
+	if ( l ) {
+		if ((lname = strrchr(l->name,'/'))) {
+			lname++;
+		} else  {
+			lname = l->name;
+		}
+	}
+	return fprintf(feil, l ? "%s[%s]" : "%s%s", lname, f->name);
 }
 
 static ObjF
@@ -405,6 +423,8 @@ Sym		*found;
 					free(nmbuf);
 				}
 
+				type = TOUPPER(type);
+
 				if ( !nsym )
 					assert( nsym = calloc(1,sizeof(*nsym)) );
 
@@ -415,12 +435,38 @@ Sym		*found;
 #if DEBUG & DEBUG_TREE
 					printf("Adding new symbol %s (found %p, sym %p)\n",(*found)->name, found, *found);
 #endif
-					nsym->name = stralloc(strlen(buf)+1);
+					nsym->name = stralloc(strlen(buf) + 1 + TYPESZ) + TYPESZ; /* store the type in name[-1] */
 					strcpy(nsym->name, buf);
+#ifdef TYPE
+					TYPE(nsym) = (char)type;
+#endif
 					nsym = 0;
 				} else {
 #if DEBUG & DEBUG_TREE
 					printf("Found existing symbol %s (found %p, sym %p)\n",(*found)->name, found, *found);
+
+#endif
+
+#ifdef TYPE
+					if (  type != TYPE(*found) ) {
+						int warn, override, nweak;
+
+						nweak= 'W' == type || 'V' == type;
+#warning TODO weak symbols
+
+						warn = ( 'U' != TYPE(*found) && 'U' != type );
+						
+				 		if (warn) {
+							printf("Warning: type mismatch between multiply defined symbols\n");
+					    	printf("         %s: known as %c, is now %c\n:", (*found)->name, TYPE(*found), type);
+						}
+
+						override = ('U' == TYPE(*found));
+
+						if (override) {
+							TYPE(*found) = type;
+						}
+					}
 #endif
 				}
 				sym = *found;
@@ -475,7 +521,7 @@ Sym		*found;
 					break;
 				}
 #if DEBUG & DEBUG_SCAN
-				printf("\t%c %s\n",type,buf);
+				printf("\t '%c' %s\n",type,buf);
 #endif
 			break;
 		}
@@ -977,22 +1023,49 @@ Xref	r;
 int		rval = 0;
 	assert( f->link.anchor );
 	for ( f = *(f->link.anchor); f; f=f->link.next ) {
+		
+		if ( BUSY == f->work )
+			continue;
+
 		for ( i = 0; i < f->nexports; i++ ) {
 			r = f->exports[i].sym->exportedBy;
 
+
 			if (XREF_NEXT(r)) {
-				rval++;
-				printf("WARNING: Name Clash Detected; symbol '%s' exported by multiple objects:\n",
-						f->exports[i].sym->name );
+				int isCommon = 0;
+#ifdef TYPE
+				isCommon = 'C' == TYPE(f->exports[i].sym);
+#endif
+
+				if ( !isCommon) {
+					rval++;
+					printf("WARNING: Name Clash Detected; symbol '%s'"
+#ifdef TYPE
+					   " (type '%c')"
+#endif
+					   " exported by multiple objects:\n",
+						f->exports[i].sym->name
+#ifdef TYPE
+						, TYPE(f->exports[i].sym)
+#endif
+					);
+				}
 				while (r) {
-					printf("  in '");
-					printObjName(stdout,r->obj);
-					printf("'%s\n", XREF_WEAK(r) ? " (WEAK [not implemented yet])" : "");
+					if (!isCommon) {
+						printf("  in '");
+						printObjName(stdout,r->obj);
+						printf("'%s\n", XREF_WEAK(r) ? " (WEAK [not implemented yet])" : "");
+					}
+					r->obj->work = BUSY;
 					r = XREF_NEXT(r);
 				}
 			}
 		}
 	}
+
+	for ( f = fileListHead; f; f=f->next )
+		f->work = 0;
+
 	return rval;
 }
 
@@ -1125,6 +1198,7 @@ usage(char *nm)
 	fprintf(stderr,"     -d:   show all module dependencies\n");
 	fprintf(stderr,"     -h:   print this message.\n");
 	fprintf(stderr,"     -r:   remove a list of objects from the link\n");
+	fprintf(stderr,"     -m:   check for symbols defined in multiple files\n");
 }
 
 int
@@ -1137,10 +1211,11 @@ int		i,nfile,ch;
 int		quiet = 0;
 int		showSyms = 0;
 int		showDeps = 0;
-char	*removal_list=0;
+int		multipleDefs = 0;
+char	*removalList = 0;
 
 
-	while ( (ch=getopt(argc, argv, "qhsdr:")) >= 0 ) {
+	while ( (ch=getopt(argc, argv, "qhsdmr:")) >= 0 ) {
 		switch (ch) { 
 			default: fprintf(stderr, "Unknown option '%c'\n",ch);
 					 exit(1);
@@ -1155,7 +1230,9 @@ char	*removal_list=0;
 			break;
 			case 'q': quiet = 1;
 			break;
-			case 'r': removal_list = optarg;
+			case 'r': removalList = optarg;
+			break;
+			case 'm': multipleDefs = 1;
 			break;
 		}
 	}
@@ -1229,15 +1306,20 @@ char	*removal_list=0;
 	printf("Removing undefined symbols\n");
 	unlinkUndefs();
 
-	if (removal_list) {
-		if (removeObjs(removal_list))
+	if (removalList) {
+		if (removeObjs(removalList))
 			exit(1);
 	}
-	printf("Checking for multiply defined symbols in the application link set:\n");
-	checkMultipleDefs(appLinkSet);
-	printf("OK\nChecking for multiply defined symbols in the optional link set:\n");
-	checkMultipleDefs(optionalLinkSet);
-	printf("OK\n");
+
+	if (multipleDefs) {
+		printf("Checking for multiply defined symbols in the application link set:\n");
+		checkMultipleDefs(appLinkSet);
+		if (optionalLinkSet) {
+			printf("OK\nChecking for multiply defined symbols in the optional link set:\n");
+			checkMultipleDefs(optionalLinkSet);
+		}
+		printf("OK\n");
+	}
 
 	assert( 0 == checkObjPtrs() );
 
