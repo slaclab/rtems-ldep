@@ -82,6 +82,7 @@
 #define DEBUG_WALK		(1<<2)
 #define DEBUG_LINK		(1<<3)
 #define DEBUG_UNLINK	(1<<4)
+#define DEBUG_COMMENT	(1<<5)
 
 #define DEBUG			(DEBUG_LINK | DEBUG_UNLINK)
 #define NWORK
@@ -243,10 +244,12 @@ char			*rval;
 #define NMFMT(max)  "%"#max"s"
 #define XNMFMT(m)	NMFMT(m)
 #define ENDFMT		"%*[^\n]\n"
+#define LNFMT(max)	"%#max[^\n]\n"
+#define XLNFMT(m)   LNFMT(m)
 //#define FMT(max)	"%"#max"s%*[ \t]%c%*[^\n] \n"
 
 #define THEFMT 		XNMFMT(MAXBUF)"%*[ \t]%c"ENDFMT
-#define THENMFMT	XNMFMT(MAXBUF)ENDFMT
+#define THENMFMT	"%[^\n]\n"
 
 /* a "special" object exporting all symbols not defined
  * anywhere else
@@ -1314,6 +1317,7 @@ int  got,i;
 int  line;
 ObjF *pobj;
 int  rval = 0;
+char *comment;
 
 	buf[MAXBUF] = 'X'; /* tag end of buffer */
 
@@ -1328,8 +1332,9 @@ int  rval = 0;
 			optionalLinkSet.name);
 
 	line = 0;
-	while ( !rval && EOF != (got=fscanf(remf,THENMFMT,buf)) ) {
+	while ( !rval && fgets(buf, MAXBUF+1, remf) ) {
 		line++;
+
 		if (!buf[MAXBUF]) {
 			fprintf(stderr,"Buffer overflow in %s (line %i)\n",
 							fname,
@@ -1338,34 +1343,46 @@ int  rval = 0;
 			return -1;
 		}
 
-		if (got<1)
-			continue;
+		/* does a comment start on this line
+		 * (note: '/' '*' must be on the same line, i.e. in buf)
+		 */
+		if ( (comment = strchr(buf, '/')) && '*'==*(comment + 1) ) {
+			/* strip comment off 'buf' */
+			*comment = 0;
+			/* scan past comment */
+			comment += 2;
+			do {
+				while ( '*' != mygc(&comment, remf) )
+					/* nothing else to do */;
+				/* at this point, we scanned past the next '*' */
+
+				while ( '*' == (i = mygc(&comment, remf)) )
+					/* nothing else to do */;
+
+				/* at this point, we scanned past the last '*' in a row */
+
+			} while ( '/' != i );
+
+		}
+
+		/* now proceed scanning the buffer */
+
+		/* strip off white space */
+		for (comment = buf; *comment && !isspace(*comment); comment++)
+			/* that's it */;
+		*comment = 0;
+
+		if (!*buf)
+			continue; /* left an empty buffer */
+
+#if DEBUG & DEBUG_COMMENT
+fprintf(debugf,"Scanned '%s'\n",buf); continue;
+#endif
 
 		got = fileListFind(buf, &pobj);
 
+
 		if ( 0 == got ) {
-			int  ch;
-			char *chpt;
-			if ( chpt = strchr(buf, '/') ) {
-				if ( '*' == *++chpt ) { /* must be on the same line, i.e. in buf */
-					/* start of comment */
-					chpt++;
-
-					do {
-						while ( '*' != mygc(&chpt, remf) )
-							/* nothing else to do */;
-						/* at this point, we scanned past the next '*' */
-
-						while ( '*' == (ch = mygc(&chpt, remf)) )
-							/* nothing else to do */;
-
-						/* at this point, we scanned past the last '*' in a row */
-
-					} while ( '/' != ch );
-
-					continue;
-				}
-			}
 			fprintf(stderr,"Object '%s' not found!\n", buf);
 		} else if (got > 1) {
 			fprintf(stderr,"Multiple occurrences of '%s':\n",buf);
