@@ -52,6 +52,8 @@ static int	verbose =
 #endif
 	;
 
+static int	force = 0;
+
 typedef struct ObjFRec_		*ObjF;
 typedef struct SymRec_		*Sym;
 typedef struct XrefRec_		*Xref;
@@ -152,9 +154,10 @@ typedef void (*DepWalkAction)(ObjF f, int depth, void *closure);
 
 
 typedef struct DepPrintArgRec_ {
-	int	minDepth;
-	int indent;
-	int depthIndent;
+	int		minDepth;
+	int 	indent;
+	int 	depthIndent;
+	FILE	*file;
 } DepPrintArgRec, *DepPrintArg;
 
 /* forward declarations */
@@ -235,7 +238,7 @@ fileListFirst()
 	return fileListHead ? fileListHead->next : 0;
 }
 
-static int	numFiles = 0;
+static int	numFiles = 1; /* undefFilePod */
 static int  numLibs  = 0;
 
 void *symTbl = 0;
@@ -387,11 +390,7 @@ char *po,*pc,*objn;
 }
 
 
-#ifdef DEBUG
-#define TOUPPER(ch)	(ch)			/* more paranoia when checking symbol types */
-#else
-#define TOUPPER(ch) toupper(ch) 	/* less paranoia when checking symbol types */
-#endif
+#define TOUPPER(ch)	(force ? toupper(ch) : (ch)) /* less paranoia when checking symbol types */
 
 
 int
@@ -510,6 +509,7 @@ Sym		*found;
 				weak = 0;
 
 				switch ( TOUPPER(type) ) {
+bail:
 					default:
 						fprintf(stderr,"Unknown symbol type '%c' (line %i)\n",type,line);
 					return -1;
@@ -538,9 +538,10 @@ Sym		*found;
 							  }
 					break;
 
-#ifndef DEBUG /* less paranoia */
 					case '?':
-#endif
+							  if ( !force ) goto bail;
+							  /* else: fall thru / less paranoia */
+
 					case 'U':
 							  {
 							  Xref im;
@@ -648,55 +649,96 @@ register Xref imp;
 }
 
 void
-trackSym(Sym s)
+trackSym(FILE *feil, Sym s)
 {
 Xref 			ex;
 Xref			imp;
 DepPrintArgRec	arg;
 
-	arg.depthIndent = 2;
+	arg.depthIndent = -2;
+	arg.file		= feil;
 
-	fprintf(logf,"What I know about Symbol '%s':\n", s->name);
-	fprintf(logf,"  Defined in object: ");
+	fprintf(feil,"What I know about Symbol '%s':\n", s->name);
+	fprintf(feil,"  Defined in object: ");
 	if ( ! (ex = s->exportedBy) ) {
-		fprintf(logf," NOWHERE!!!\n");
+		fprintf(feil," NOWHERE!!!\n");
 	} else {
-		fprintf(logf,"%s%s\n", ex->obj->name, XREF_WEAK(ex) ? " (WEAK)" : "");
+		printObjName(feil, ex->obj);
+		fprintf(feil,"%s\n", XREF_WEAK(ex) ? " (WEAK)" : "");
 		while ( ex=XREF_NEXT(ex) ) {
-			fprintf(logf,"      AND in object: %s%s\n", ex->obj->name, XREF_WEAK(ex) ? " (WEAK)" : "");
+			fprintf(feil,"      AND in object: ");
+			printObjName(feil, ex->obj);
+			fprintf(feil,"%s\n", XREF_WEAK(ex) ? " (WEAK)" : "");
 		}
 	}
 
 	if ( (ex=s->exportedBy) ) {
-		fprintf(logf,"  Depending on objects (triggers linkage of):");
+		fprintf(feil,"  Depending on objects (triggers linkage of):");
 		if (0 == ex->obj->nimports) {
-			fprintf(logf," NONE\n");
+			fprintf(feil," NONE\n");
 		} else {
-			fprintf(logf,"\n");
+			fprintf(feil,"\n");
 			arg.minDepth    = 1;
 			arg.indent      = 0;
-			arg.depthIndent = -1;
 			depwalk(ex->obj, depPrint, (void*)&arg, WALK_IMPORTS | WALK_BUILD_LIST);
 			depwalkListRelease(ex->obj);
 		}
 	}
 
-	fprintf(logf,"  Needed by objects (but host object may be needed due to other symbols):");
+	fprintf(feil,"  Objects depending (maybe indirectly) on this symbol:\n");
+    fprintf(feil,"  Note: the host object may depend on yet more objects due to other symbols...\n");
 
 	imp = s->importedFrom;
 
 	if ( imp ) {
-		fprintf(logf,"\n");
+		fprintf(feil,"\n");
 		arg.minDepth    = 0;
 		arg.indent      = 4;
-		arg.depthIndent = -1;
 		do {
 			depwalk(imp->obj, depPrint, (void*)&arg, WALK_EXPORTS | WALK_BUILD_LIST);
 			depwalkListRelease(imp->obj);
 		} while ( imp = XREF_NEXT(imp) );
 	} else {
-		fprintf(logf," NONE\n");
+		fprintf(feil," NONE\n");
 	}
+}
+
+int
+trackObj(FILE *feil, ObjF f)
+{
+int				i;
+DepPrintArgRec	arg;
+
+	fprintf(feil,"What I know about object '");
+	printObjName(feil,f);
+	fprintf(feil,"':\n");
+
+	fprintf(feil,"  Exported symbols:\n");
+
+	for ( i=0; i<f->nexports; i++)
+		fprintf(feil,"    %s\n",f->exports[i].sym->name);
+
+	fprintf(feil,"  Imported symbols:\n");
+
+	for ( i=0; i<f->nimports; i++)
+		fprintf(feil,"    %s\n",f->imports[i].sym->name);
+
+	fprintf(feil,"  Objects depending on me (including indirect dependencies):\n");
+
+	arg.minDepth    = 0;
+	arg.indent      = 4;
+	arg.depthIndent = -1;
+	arg.file		= feil;
+
+	depwalk(f, depPrint, (void*)&arg, WALK_EXPORTS | WALK_BUILD_LIST);
+	depwalkListRelease(f);
+
+	fprintf(feil,"  Objects I depend on (including indirect dependencies):\n");
+
+	depwalk(f, depPrint, (void*)&arg, WALK_IMPORTS | WALK_BUILD_LIST);
+	depwalkListRelease(f);
+	
+	return 0;
 }
 
 static void
@@ -706,8 +748,11 @@ Xref	imp,p,n;
 int		i;
 ObjF	*pl;
 
-	if ( verbose & DEBUG_UNLINK )
-		fprintf(debugf,"\n  removing object '%s'... ", f->name);
+	if ( verbose & DEBUG_UNLINK ) {
+		fprintf(debugf,"\n  removing object '");
+		printObjName(debugf,f);
+		fprintf(debugf,"'... ");
+	}
 
 	for (i=0, imp=f->imports; i<f->nimports; i++, imp++) {
 		/* remove ourself from the list of importers of that symbol */
@@ -744,8 +789,11 @@ static void
 checkSysLinkSet(ObjF f, int depth, void *closure)
 {
 	if ( f->link.anchor == &appLinkSet ) {
-	if ( verbose & DEBUG_UNLINK &&  ! *(int*)closure )
-			fprintf(debugf,"  --> rejected because '%s' is needed by app", f->name);
+		if ( verbose & DEBUG_UNLINK &&  ! *(int*)closure ) {
+			fprintf(debugf,"  --> rejected because '");
+			printObjName(debugf,f);
+			fprintf(debugf,"' is needed by app");
+		}
 		*(int*)closure = 1;
 	}
 }
@@ -803,8 +851,11 @@ ObjF	q = &undefSymPod;
 			/* ex->sym.importedFrom must depend on a system module, skip to the next */
 			p = ex->sym->importedFrom;
 			do {
-				if ( verbose & DEBUG_UNLINK )
-					fprintf(debugf,"\n  skipping application dependeny; object '%s'\n",p->obj->name);
+				if ( verbose & DEBUG_UNLINK ) {
+					fprintf(debugf,"\n  skipping application dependeny; object '");
+					printObjName(debugf,p->obj);
+					fprintf(debugf,"'\n");
+				}
 				while ( (n=XREF_NEXT(p)) && 0 == unlinkObj(n->obj) )
 					/* nothing else to do */;
 			} while ( p = n ); /* reached a system module; skip */
@@ -948,7 +999,7 @@ static void
 symTraceAct(const void *pnode, const VISIT when, const int depth)
 {
 	if ( postorder == when || leaf == when ) {
-		trackSym(*(Sym*)pnode);
+		trackSym(logf, *(Sym*)pnode);
 	}
 }
 
@@ -998,10 +1049,14 @@ CheckArgRec arg;
 void
 depPrint(ObjF f, int d, void *closure)
 {
-DepPrintArg arg = (DepPrintArg)closure;
+DepPrintArg  arg  = (DepPrintArg)closure;
+FILE		*feil = arg->file;
 
 	if (d < arg->minDepth)
 		return;
+
+	if (!feil)
+		feil = logf;
 
 	if (arg->depthIndent >= 0)
 		d <<= arg->depthIndent;
@@ -1009,8 +1064,9 @@ DepPrintArg arg = (DepPrintArg)closure;
 		d = 0;
 	d += arg->indent;
 	while (d-- > 0)
-		fputc(' ',stdout);
-	fprintf(logf,"%s\n",f->name);
+		fputc(' ', feil);
+	printObjName(feil, f);
+	fputc('\n', feil);
 }
 
 static int
@@ -1033,7 +1089,9 @@ int		rval;
 		else
 			return 1; /* a has library name, b has not b<a */
 	}
-	return objb->lib ? -1 : 0;
+	rval = objb->lib ? -1 : 0;
+
+	return rval;
 }
 
 ObjF *
@@ -1095,7 +1153,7 @@ int		rval = 0;
 				while (r) {
 					if (!isCommon) {
 						fprintf(logf,"  in '");
-						printObjName(stdout,r->obj);
+						printObjName(logf,r->obj);
 						fprintf(logf,"'%s\n", XREF_WEAK(r) ? " (WEAK [not implemented yet])" : "");
 					}
 					r->obj->work = BUSY;
@@ -1135,7 +1193,7 @@ int		rval = 0;
 
 	f->name = objn;
 
-	if (po) {
+	if (po && *name) {
 		for (l=libListHead; l; l=l->next) {
 			if ( !strcmp(l->name, name) ) {
 				break;
@@ -1273,21 +1331,114 @@ writeScript(FILE *feil, int optionalOnly)
 static void 
 usage(char *nm)
 {
-	fprintf(stderr,"Usage: %s [-qhsdmlu] [-r removal_list] [-o log_file] [-e script_file] [filenames]\n", nm);
-	fprintf(stderr,"(This is ldep $Revision$ by Till Straumann <strauman@slac.stanford.edu>)\n");
+char *strip = strrchr(nm,'/');
+	if (strip)
+		nm = strip+1;
+	fprintf(stderr,"\nUsage: %s [-dfhilmqsu] [-r removal_list] [-o log_file] [-e script_file] [nm_files]\n\n", nm);
 	fprintf(stderr,"   Object file dependency analysis; the input files must be\n");
 	fprintf(stderr,"   created with 'nm -g -fposix'.\n\n");
+	fprintf(stderr,"(This is ldep $Revision$ by Till Straumann <strauman@slac.stanford.edu>)\n\n");
+	fprintf(stderr,"   Input:\n");
+	fprintf(stderr,"           If no 'nm_files' are given, 'stdin' is used. The first 'nm_file' is\n");
+	fprintf(stderr,"           special: it lists MANDATORY objects/symbols ('application files')\n");
+	fprintf(stderr,"           objects added by the other 'nm_files' are 'optional' unless a mandatory\n");
+	fprintf(stderr,"           object depends on an optional object. In this case, the latter becomes\n");
+	fprintf(stderr,"           mandatory as well.\n\n");
+
 	fprintf(stderr,"   Options:\n");
-	fprintf(stderr,"     -q:   quiet; just build database and do basic checks\n");
-	fprintf(stderr,"     -s:   show all symbol info (huge amounts of data!)\n");
-	fprintf(stderr,"     -d:   show all module dependencies (huge amounts of data!)\n");
+	fprintf(stderr,"     -d:   show all module dependencies (huge amounts of data! -- use '-l', '-u')\n");
+	fprintf(stderr,"     -e:   on success, generate a linker script 'script_file' with EXTERN statements\n");
+	fprintf(stderr,"     -f:   be less paranoid when scanning symbols: accept 'local symbols' (map all\n");
+	fprintf(stderr,"           types to upper-case) and assume unrecognized symbol types ('?') are 'U'\n");
 	fprintf(stderr,"     -h:   print this message.\n");
-	fprintf(stderr,"     -r:   remove a list of objects from the link - name them, one per line, in 'removal_list'\n");
+	fprintf(stderr,"     -i:   enter interactive mode\n");
 	fprintf(stderr,"     -l:   log info about the linking process\n");
-	fprintf(stderr,"     -u:   log info about the unlinking process\n");
 	fprintf(stderr,"     -m:   check for symbols defined in multiple files\n");
 	fprintf(stderr,"     -o:   log messages to 'log_file' instead of 'stdout' (default)\n");
-	fprintf(stderr,"     -e:   on success, generate a linker script 'script_file' with EXTERN statements\n");
+	fprintf(stderr,"     -q:   quiet; just build database and do basic checks\n");
+	fprintf(stderr,"     -r:   remove a list of objects from the link - name them, one per line, in\n");
+    fprintf(stderr,"           the file 'removal_list'\n");
+	fprintf(stderr,"           NOTE: if a mandatory object depends on an object to be removed, removal\n");
+	fprintf(stderr,"                 is rejected.\n");
+	fprintf(stderr,"     -s:   show all symbol info (huge amounts of data! -- use '-l', '-u')\n");
+	fprintf(stderr,"     -u:   log info about the unlinking process\n");
+}
+
+int
+interactive(FILE *feil)
+{
+Sym		*found;
+ObjF	*f;
+char	buf[MAXBUF+1];
+int		len, nf, i, choice;
+SymRec	sym = {0};
+
+	sym.name = buf;
+
+	buf[0]=0;
+
+	buf[MAXBUF]='0';
+
+	do {
+		if ( MAXBUF == (len=strlen(buf)) ) {
+			fprintf(stderr,"Line buffer overflow in interactive mode\n");
+			return -1;
+		}
+
+		if ( !*buf || '\n'==*buf ) {
+			fputc('\n',feil);
+			fprintf(feil, "Query database (enter single '.' to quit) for\n");
+			fprintf(feil, " A) Symbols, e.g. 'printf'\n");
+			fprintf(feil, " B) Objects, e.g. '[printf.o]', 'libc.a[printf.o]'\n\n");
+		} else {
+			buf[--len]=0; /* strip trailing '\n' */
+			if ( ']' == buf[len-1] ) {
+				nf = fileListFind(buf, &f);
+
+				if ( !nf ) {
+					fprintf(feil,"object '%s' not found, try again.\n", buf);
+				} else {
+					choice = 0;
+					if ( nf > 1 ) {
+						fprintf(feil,"multiple instances found, make a choice:\n");
+						for (i = 0; i<nf; i++) {
+							fprintf(feil,"%i) - ",i); printObjName(feil, f[i]); fputc('\n', feil);
+						}
+
+						while (    !fgets( buf, MAXBUF, stdin) ||
+								 1 !=sscanf(buf,"%i",&choice)  ||
+								 choice < 0                    ||
+								 choice >= nf ) {
+
+								if ( !strcmp(".\n",buf) )
+									return 0;
+
+								fprintf(feil, "\nInvalid Choice, ");
+								
+								if (!*buf) {
+									fprintf(feil,"bailing out\n");
+									return -1;
+								}
+
+								fprintf(feil,"try again\n");
+								*buf = 0;
+						}
+
+
+					}
+					trackObj(feil, f[choice]);
+				}
+			} else {
+				found = (Sym*) tfind(&sym, &symTbl, symcmp);
+
+				if ( !found ) {
+					fprintf(feil,"Symbol '%s' not found, try again\n", sym.name);
+				} else {
+					trackSym(feil, *found);
+				}
+			}
+		}
+	} while ( fgets(buf, MAXBUF, stdin) && *buf && strcmp(buf,".\n") );
 }
 
 int
@@ -1304,10 +1455,11 @@ int		showSyms = 0;
 int		showDeps = 0;
 int		multipleDefs = 0;
 char	*removalList = 0;
+int		interActive  = 0;
 
-	logf = debugf = stdout;
+	logf = stdout;
 
-	while ( (ch=getopt(argc, argv, "qhsdmlur:o:e:")) >= 0 ) {
+	while ( (ch=getopt(argc, argv, "qhifsdmlur:o:e:")) >= 0 ) {
 		switch (ch) { 
 			default: fprintf(stderr, "Unknown option '%c'\n",ch);
 					 exit(1);
@@ -1320,13 +1472,17 @@ char	*removalList = 0;
 			break;
 			case 'u': verbose |= DEBUG_UNLINK;
 			break;
-			case 'd': showDeps = 1;
+			case 'd': showDeps     = 1;
 			break;
-			case 's': showSyms = 1;
+			case 'f': force        = 1;
 			break;
-			case 'q': quiet = 1;
+			case 'i': interActive  = 1;
 			break;
-			case 'r': removalList = optarg;
+			case 's': showSyms     = 1;
+			break;
+			case 'q': quiet        = 1;
+			break;
+			case 'r': removalList  = optarg;
 			break;
 			case 'm': multipleDefs = 1;
 			break;
@@ -1340,6 +1496,8 @@ char	*removalList = 0;
 			break;
 		}
 	}
+
+	debugf = logf;
 
 	nfile = optind;
 
@@ -1367,7 +1525,7 @@ char	*removalList = 0;
 	fprintf(logf,"Looking for UNDEFINED symbols:\n");
 	for (i=0; i<fileListHead->nexports; i++) {
 #if 0
-		trackSym(fileListHead->exports[i].sym);
+		trackSym(logf, fileListHead->exports[i].sym);
 #else
 		fprintf(logf," - '%s'\n",fileListHead->exports[i].sym->name);
 #endif
@@ -1376,7 +1534,7 @@ char	*removalList = 0;
 
 	assert( 0 == checkObjPtrs() );
 
-	for ( f=fileListFirst(), linkSet = &appLinkSet ; f; f=f->next) { 
+	for ( f=fileListFirst(), linkSet = &appLinkSet ; f; f=f->next) {
 		if (!f->link.anchor) {
 			f->link.anchor = linkSet;
 			linkObj(f, 0);
@@ -1399,6 +1557,7 @@ char	*removalList = 0;
 				arg.minDepth    =  0;
 				arg.indent      = -4;
 				arg.depthIndent = 2;
+				arg.file		= logf;
 #if 0
 			/* this recursion can become VERY deep */
 			fprintf(logf,"\n\nDependencies ON object: ");
@@ -1423,6 +1582,10 @@ char	*removalList = 0;
 	if (multipleDefs) {
 		checkMultipleDefs(&appLinkSet);
 		checkMultipleDefs(&optionalLinkSet);
+	}
+
+	if (interActive) {
+		interactive(stderr);
 	}
 
 	assert( 0 == checkObjPtrs() );
