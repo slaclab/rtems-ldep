@@ -656,10 +656,10 @@ register Xref imp;
 	assert(f->link.anchor);
 
 	if (verbose & DEBUG_LINK) {
-		fprintf(debugf,"Linking '"); printObjName(debugf,f); fputc('\'', debugf);
+		fprintf(logf,"Linking '"); printObjName(debugf,f); fputc('\'', debugf);
 		if (symname)
-			fprintf(debugf,"because of '%s'",symname);
-		fprintf(debugf," to %s link set\n", f->link.anchor->name);
+			fprintf(logf,"because of '%s'",symname);
+		fprintf(logf," to %s link set\n", f->link.anchor->name);
 	}
 
 	for (i=0, imp=f->imports; i<f->nimports; i++, imp++) {
@@ -791,9 +791,9 @@ int		i;
 ObjF	*pl;
 
 	if ( verbose & DEBUG_UNLINK ) {
-		fprintf(debugf,"\n  removing object '");
-		printObjName(debugf,f);
-		fprintf(debugf,"'... ");
+		fprintf(logf,"\n  removing object '");
+		printObjName(logf,f);
+		fprintf(logf,"'... ");
 	}
 
 	for (i=0, imp=f->imports; i<f->nimports; i++, imp++) {
@@ -824,7 +824,7 @@ ObjF	*pl;
 	f->link.anchor = 0;
 
 	if ( verbose & DEBUG_UNLINK )
-		fprintf(debugf,"OK\n");
+		fprintf(logf,"OK\n");
 }
 
 static void
@@ -832,9 +832,9 @@ checkSysLinkSet(ObjF f, int depth, void *closure)
 {
 	if ( f->link.anchor == &appLinkSet ) {
 		if ( verbose & DEBUG_UNLINK &&  ! *(int*)closure ) {
-			fprintf(debugf,"  --> rejected because '");
-			printObjName(debugf,f);
-			fprintf(debugf,"' is needed by app");
+			fprintf(logf,"  --> rejected because '");
+			printObjName(logf,f);
+			fprintf(logf,"' is needed by app");
 		}
 		*(int*)closure = 1;
 	}
@@ -857,6 +857,14 @@ unlinkObj(ObjF f)
 {
 int		reject = 0;
 
+	if ( !f->link.anchor ) {
+		fputc(' ',logf);
+		fputc(' ',logf);
+		printObjName(logf,f);
+		fprintf(logf," is currently not part of any link set.\n");
+		return 0;
+	}
+
 	depwalk(f, 0, 0, WALK_EXPORTS | WALK_BUILD_LIST);
 
 	/* check if any of the objects is part of the
@@ -867,6 +875,10 @@ int		reject = 0;
 	if ( ! reject ) {
 		workListIterate(f, doUnlink, 0);
 		workListIterate(f, checkSanity, 0);
+	} else if ( verbose & DEBUG_UNLINK ) {
+		fprintf(logf,"\n  skipping object '");
+		printObjName(logf,f);
+		fprintf(logf,"'... done.\n");
 	}
 	depwalkListRelease(f);
 	return reject;
@@ -886,7 +898,7 @@ ObjF	q = &undefSymPod;
 
 	for (i=0, ex=q->exports; i<q->nexports; i++,ex++) {
 		if ( verbose & DEBUG_UNLINK )
-			fprintf(debugf,"removing objects depending on '%s'...", ex->sym->name);
+			fprintf(logf,"removing objects depending on '%s'...", ex->sym->name);
 		while (ex->sym->importedFrom && 0==unlinkObj(ex->sym->importedFrom->obj))
 			/* nothing else to do */;
 		if (ex->sym->importedFrom) {
@@ -894,16 +906,16 @@ ObjF	q = &undefSymPod;
 			p = ex->sym->importedFrom;
 			do {
 				if ( verbose & DEBUG_UNLINK ) {
-					fprintf(debugf,"\n  skipping application dependeny; object '");
-					printObjName(debugf,p->obj);
-					fprintf(debugf,"'\n");
+					fprintf(logf,"\n  skipping application dependeny; object '");
+					printObjName(logf,p->obj);
+					fprintf(logf,"'\n");
 				}
 				while ( (n=XREF_NEXT(p)) && 0 == unlinkObj(n->obj) )
 					/* nothing else to do */;
 			} while ( p = n ); /* reached a system module; skip */
 		}
 		if ( verbose & DEBUG_UNLINK )
-			fprintf(debugf,"done.\n");
+			fprintf(logf,"done.\n");
 	}
 	return 0;
 }
@@ -1275,6 +1287,24 @@ cleanup:
 	return rval;
 }
 
+static int mygc(char **pchpt, FILE *f)
+{
+int rval;
+	if (*pchpt) {
+		rval = *((*pchpt)++);
+		if (!**pchpt)
+			*pchpt = 0;
+	} else {
+		rval = getc(f);
+	}
+	return rval;
+}
+
+static int myugc(int ch, char **pchpt, FILE *f)
+{
+	return !*pchpt ? ungetc(ch,f) : (*(--(*pchpt)) = (unsigned char)ch);
+}
+
 int
 removeObjs(char *fname)
 {
@@ -1283,6 +1313,7 @@ char buf[MAXBUF+1];
 int  got,i;
 int  line;
 ObjF *pobj;
+int  rval = 0;
 
 	buf[MAXBUF] = 'X'; /* tag end of buffer */
 
@@ -1297,7 +1328,7 @@ ObjF *pobj;
 			optionalLinkSet.name);
 
 	line = 0;
-	while ( EOF != (got=fscanf(remf,THENMFMT,buf)) ) {
+	while ( !rval && EOF != (got=fscanf(remf,THENMFMT,buf)) ) {
 		line++;
 		if (!buf[MAXBUF]) {
 			fprintf(stderr,"Buffer overflow in %s (line %i)\n",
@@ -1313,7 +1344,29 @@ ObjF *pobj;
 		got = fileListFind(buf, &pobj);
 
 		if ( 0 == got ) {
-			fprintf(stderr,"Object '%s' not found, skipping...", buf);
+			int  ch;
+			char *chpt;
+			if ( chpt = strchr(buf, '/') ) {
+				if ( '*' == *++chpt ) { /* must be on the same line, i.e. in buf */
+					/* start of comment */
+					chpt++;
+
+					do {
+						while ( '*' != mygc(&chpt, remf) )
+							/* nothing else to do */;
+						/* at this point, we scanned past the next '*' */
+
+						while ( '*' == (ch = mygc(&chpt, remf)) )
+							/* nothing else to do */;
+
+						/* at this point, we scanned past the last '*' in a row */
+
+					} while ( '/' != ch );
+
+					continue;
+				}
+			}
+			fprintf(stderr,"Object '%s' not found!\n", buf);
 		} else if (got > 1) {
 			fprintf(stderr,"Multiple occurrences of '%s':\n",buf);
 			for (i=0; i<got; i++) {
@@ -1322,17 +1375,17 @@ ObjF *pobj;
 				printObjName(stderr,pobj[i]);
 				fputc('\n',stderr);
 			}
-			fprintf(stderr,"please be more specific; skipping '%s'\n",buf);
+			fprintf(stderr,"please be more specific!\n",buf);
 		} else  {
 			if (unlinkObj(*pobj)) {
-				fprintf(stderr,"Object '%s' couldn't be removed; probably it's needed by the application", buf);
+				fprintf(stderr,"Object '%s' couldn't be removed; probably it's needed by the application\n", buf);
 			}
 		}
-		fputc('\n',stderr);
+		rval = (got != 1);
 	}
 
 	fclose(remf);
-	return 0;
+	return rval;
 }
 
 static int
@@ -1376,7 +1429,7 @@ usage(char *nm)
 char *strip = strrchr(nm,'/');
 	if (strip)
 		nm = strip+1;
-	fprintf(stderr,"\nUsage: %s [-dfhilmqsu] [-A main_symbol] [-r removal_list] [-o log_file] [-e script_file] [nm_files]\n\n", nm);
+	fprintf(stderr,"\nUsage: %s [-adfhilmqsu] [-A main_symbol] [-r removal_list] [-o log_file] [-e script_file] [nm_files]\n\n", nm);
 	fprintf(stderr,"   Object file dependency analysis; the input files must be\n");
 	fprintf(stderr,"   created with 'nm -g -fposix'.\n\n");
 	fprintf(stderr,"(This is ldep $Revision$ by Till Straumann <strauman@slac.stanford.edu>)\n\n");
@@ -1393,6 +1446,7 @@ char *strip = strrchr(nm,'/');
 	fprintf(stderr,"           (directly or indirectly) needed by the object defining 'main_symbol' is\n");
 	fprintf(stderr,"           mandatory.\n");
 	fprintf(stderr,"           NOTE: The first 'nm_file' is NOT treated special if this option is used.\n");
+	fprintf(stderr,"     -a:   when generating a script (see -e), only list the optional link set\n");
 	fprintf(stderr,"     -d:   show all module dependencies (huge amounts of data! -- use '-l', '-u')\n");
 	fprintf(stderr,"     -e:   on success, generate a linker script 'script_file' with EXTERN statements\n");
 	fprintf(stderr,"     -f:   be less paranoid when scanning symbols: accept 'local symbols' (map all\n");
@@ -1488,6 +1542,13 @@ SymRec	sym = {0};
 	} while ( fgets(buf, MAXBUF, stdin) && *buf && strcmp(buf,".\n") );
 }
 
+#define OPT_SHOW_DEPS		(1<<0)
+#define OPT_SHOW_SYMS		(1<<1)
+#define OPT_INTERACTIVE		(1<<2)
+#define OPT_QUIET			(1<<3)
+#define OPT_MULTIDEFS		(1<<4)
+#define OPT_NO_APPSET		(1<<5)
+
 int
 main(int argc, char **argv)
 {
@@ -1496,13 +1557,9 @@ FILE	*scrf         = 0;
 char	*scrn         = 0;
 ObjF	lastAppObj    = 0; 
 SymRec	mainSym       = {0};
-int		quiet         = 0;
-int		showSyms      = 0;
-int		showDeps      = 0;
-int		multipleDefs  = 0;
 char	*removalList  = 0;
-int		interActive   = 0;
 char	*mainName     = 0;
+int		options       = 0;
 int		i,nfile,ch;
 ObjF	f;
 LinkSet	linkSet;
@@ -1510,7 +1567,7 @@ Sym		*found;
 
 	logf = stdout;
 
-	while ( (ch=getopt(argc, argv, "A:qhifsdmlur:o:e:")) >= 0 ) {
+	while ( (ch=getopt(argc, argv, "aA:qhifsdmlur:o:e:")) >= 0 ) {
 		switch (ch) { 
 			default: fprintf(stderr, "Unknown option '%c'\n",ch);
 					 exit(1);
@@ -1519,25 +1576,28 @@ Sym		*found;
 				usage(argv[0]);
 				exit(0);
 
+
 			case 'A': mainSym.name = optarg;
 			break;
 			case 'l': verbose |= DEBUG_LINK;
 			break;
+			case 'a': options |= OPT_NO_APPSET;
+			break;    
 			case 'u': verbose |= DEBUG_UNLINK;
 			break;
-			case 'd': showDeps     = 1;
+			case 'd': options |= OPT_SHOW_DEPS;
 			break;
 			case 'f': force        = 1;
 			break;
-			case 'i': interActive  = 1;
+			case 'i': options |= OPT_INTERACTIVE;
 			break;
-			case 's': showSyms     = 1;
+			case 's': options |= OPT_SHOW_SYMS;
 			break;
-			case 'q': quiet        = 1;
+			case 'q': options |= OPT_QUIET;
 			break;
 			case 'r': removalList  = optarg;
 			break;
-			case 'm': multipleDefs = 1;
+			case 'm': options |= OPT_MULTIDEFS;
 			break;
 			case 'o':
 				if ( !(logf=fopen(optarg,"w")) ) {
@@ -1622,15 +1682,15 @@ Sym		*found;
 			linkSet = &optionalLinkSet;	
 	}
 
-	if (quiet) {
+	if ( options & OPT_QUIET ) {
 		fprintf(logf,"OK, that's it for now\n");
 		exit(0);
 	}
 
-	if (showSyms)
+	if ( options & OPT_SHOW_SYMS )
 		twalk(symTbl, symTraceAct);
 
-	if (showDeps) {
+	if ( options & OPT_SHOW_DEPS ) {
 			for (f=fileListFirst(); f; f=f->next) {
 			DepPrintArgRec arg;
 				arg.minDepth    =  0;
@@ -1658,12 +1718,12 @@ Sym		*found;
 			exit(1);
 	}
 
-	if (multipleDefs) {
+	if ( options & OPT_MULTIDEFS ) {
 		checkMultipleDefs(&appLinkSet);
 		checkMultipleDefs(&optionalLinkSet);
 	}
 
-	if (interActive) {
+	if ( options & OPT_INTERACTIVE ) {
 		interactive(stderr);
 	}
 
@@ -1676,7 +1736,7 @@ Sym		*found;
 			fprintf(logf,"opening file failed.\n");
 			exit (1);
 		}
-		writeScript(scrf,0);
+		writeScript(scrf, options & OPT_NO_APPSET);
 		fclose(scrf);
 		fprintf(logf,"done.\n");
 	}
