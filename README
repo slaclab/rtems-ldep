@@ -135,6 +135,28 @@ file per library, e.g.:
 NOTE: the FIRST symbol/name file given to 'ldep' on the
       command line must contain the 'Application' objects
       (not the libraries - the dependencies are automatically
-      resolved!)
+      resolved!). You may generate it e.g. by
+
+      powerpc-rtems-nm -g -fposix init.o config.o > app.nm
+
+      Alternatively, the application's 'main' symbol may
+      be specified on the command line using the '-A' option.
+      The first symbol/name file is not treated special
+      in this case.
+
+Examples:
+
+Short help:
+
+  ldep -h
+
+Generate linker script, application symbols in 'app.nm'
+
+  ldep -e script app.nm librtemscpu.nm librtemsbsp.nm libc.nm  ...
+
+Generate linker script, application 'main' symbol is 'Init',
+remove objects listed in 'exclude_objects':
+
+  ldep -e script -A Init -r exclude_objects app.nm libxxx.nm ...
 
 

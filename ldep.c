@@ -1376,18 +1376,23 @@ usage(char *nm)
 char *strip = strrchr(nm,'/');
 	if (strip)
 		nm = strip+1;
-	fprintf(stderr,"\nUsage: %s [-dfhilmqsu] [-r removal_list] [-o log_file] [-e script_file] [nm_files]\n\n", nm);
+	fprintf(stderr,"\nUsage: %s [-dfhilmqsu] [-A main_symbol] [-r removal_list] [-o log_file] [-e script_file] [nm_files]\n\n", nm);
 	fprintf(stderr,"   Object file dependency analysis; the input files must be\n");
 	fprintf(stderr,"   created with 'nm -g -fposix'.\n\n");
 	fprintf(stderr,"(This is ldep $Revision$ by Till Straumann <strauman@slac.stanford.edu>)\n\n");
 	fprintf(stderr,"   Input:\n");
 	fprintf(stderr,"           If no 'nm_files' are given, 'stdin' is used. The first 'nm_file' is\n");
-	fprintf(stderr,"           special: it lists MANDATORY objects/symbols ('application files')\n");
+	fprintf(stderr,"           special (unless using -A, see below): it lists MANDATORY objects/symbols\n");
+    fprintf(stderr,"           (AKA 'application files').\n");
 	fprintf(stderr,"           objects added by the other 'nm_files' are 'optional' unless a mandatory\n");
 	fprintf(stderr,"           object depends on an optional object. In this case, the latter becomes\n");
 	fprintf(stderr,"           mandatory as well.\n\n");
 
 	fprintf(stderr,"   Options:\n");
+	fprintf(stderr,"     -A:   use 'main_symbol' to construct the set of mandatory objects - anything\n");
+	fprintf(stderr,"           (directly or indirectly) needed by the object defining 'main_symbol' is\n");
+	fprintf(stderr,"           mandatory.\n");
+	fprintf(stderr,"           NOTE: The first 'nm_file' is NOT treated special if this option is used.\n");
 	fprintf(stderr,"     -d:   show all module dependencies (huge amounts of data! -- use '-l', '-u')\n");
 	fprintf(stderr,"     -e:   on success, generate a linker script 'script_file' with EXTERN statements\n");
 	fprintf(stderr,"     -f:   be less paranoid when scanning symbols: accept 'local symbols' (map all\n");
@@ -1486,22 +1491,26 @@ SymRec	sym = {0};
 int
 main(int argc, char **argv)
 {
-FILE	*feil = stdin;
-FILE	*scrf = 0;
-char	*scrn = 0;
-ObjF	f, lastAppObj=0; 
-LinkSet	linkSet;
+FILE	*feil         = stdin;
+FILE	*scrf         = 0;
+char	*scrn         = 0;
+ObjF	lastAppObj    = 0; 
+SymRec	mainSym       = {0};
+int		quiet         = 0;
+int		showSyms      = 0;
+int		showDeps      = 0;
+int		multipleDefs  = 0;
+char	*removalList  = 0;
+int		interActive   = 0;
+char	*mainName     = 0;
 int		i,nfile,ch;
-int		quiet = 0;
-int		showSyms = 0;
-int		showDeps = 0;
-int		multipleDefs = 0;
-char	*removalList = 0;
-int		interActive  = 0;
+ObjF	f;
+LinkSet	linkSet;
+Sym		*found;
 
 	logf = stdout;
 
-	while ( (ch=getopt(argc, argv, "qhifsdmlur:o:e:")) >= 0 ) {
+	while ( (ch=getopt(argc, argv, "A:qhifsdmlur:o:e:")) >= 0 ) {
 		switch (ch) { 
 			default: fprintf(stderr, "Unknown option '%c'\n",ch);
 					 exit(1);
@@ -1510,6 +1519,8 @@ int		interActive  = 0;
 				usage(argv[0]);
 				exit(0);
 
+			case 'A': mainSym.name = optarg;
+			break;
 			case 'l': verbose |= DEBUG_LINK;
 			break;
 			case 'u': verbose |= DEBUG_UNLINK;
@@ -1554,7 +1565,7 @@ int		interActive  = 0;
 			exit(1);
 		}
 		/* the first file we scan contains the application's
-		 * mandatory file set
+		 * mandatory file set - unless '-A' is used.
 		 */
 		if ( !lastAppObj )
 			lastAppObj = fileListTail;
@@ -1576,7 +1587,33 @@ int		interActive  = 0;
 
 	assert( 0 == checkObjPtrs() );
 
-	for ( f=fileListFirst(), linkSet = &appLinkSet ; f; f=f->next) {
+	linkSet = &appLinkSet;
+
+	if ( mainSym.name ) {
+		if ( !(found = (Sym*)tfind( &mainSym, &symTbl, symcmp )) ) {
+			fprintf(stderr,"Error: unable to find main symbol '%s'\n",mainSym.name);
+			exit(1);
+		}
+
+		if ( !(*found)->exportedBy ) {
+			fprintf(stderr,"Error: no object defines main application symbol '%s'\n",mainSym.name);
+		}
+
+		f = (*found)->exportedBy->obj;
+
+		fprintf(logf,"Main application symbol '%s' found in '");
+		printObjName(logf,f);
+		fprintf(logf,"'; linking...\n");
+
+		assert( !f->link.anchor );
+		f->link.anchor = linkSet;
+		linkObj(f, mainSym.name);
+		linkSet = &optionalLinkSet;
+
+		/* ignore lastAppObj */
+	}
+
+	for ( f=fileListFirst(); f; f=f->next) {
 		if (!f->link.anchor) {
 			f->link.anchor = linkSet;
 			linkObj(f, 0);
