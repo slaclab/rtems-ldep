@@ -118,6 +118,13 @@ to the following algorithm:
 5) 'ldep' generates, upon request, a linker script
    file containing proper EXTERN declarations.
 
+5a) 'ldep' can also emit C-code ('-C' option) suitable
+   for using as a Cexp symbol table. Since all desired
+   symbols are referenced by this C-source file, building
+   it into the application ensures that all desired link
+   sets are included in the final link. No special
+   linker script is needed in this case.
+
 How to generate input files for 'ldep'
 
 The proper symbol tables must be generated with

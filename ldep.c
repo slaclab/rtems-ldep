@@ -87,6 +87,9 @@
 
 #define NWORK
 
+#define LINKER_VERSION_SEPARATOR '@'
+#define DUMMY_ALIAS_PREFIX       "__cexp_dummy_alias_"
+
 /* TYPE DECLARATIONS */
 
 /* 'forward' declaration of pointer types */
@@ -170,6 +173,7 @@ typedef struct ProcTabRec_ {
 /* struct describing a symbol */
 typedef struct SymRec_ {
 	char	*name;			/* we point 'name' to a string and store the type in 'name[-1]' */
+	int		size;			/* size of object associated with symbol */
 	Xref	exportedBy;		/* linked list of cross-references to objects exporting this symbol */
 	Xref	importedFrom;	/* anchor of a linked list of cross-references to objects importing this symbol */
 } SymRec;
@@ -280,11 +284,11 @@ char			*rval;
 
 #define NMFMT(max)  "%"#max"s"
 #define XNMFMT(m)	NMFMT(m)
-#define ENDFMT		"%*[^\n]\n"
+#define STRFMT		XNMFMT(MAXBUF)"%*[ \t]"
 /* #define FMT(max)	"%"#max"s%*[ \t]%c%*[^\n] \n" */
 
 /* format string to scan 'nm -g -fposix' output */
-#define THEFMT 		XNMFMT(MAXBUF)"%*[ \t]%c"ENDFMT
+#define THEFMT 		"%c%x%x"
 
 /* GLOBAL VARIABLES */
 
@@ -560,27 +564,43 @@ int
 scan_file(FILE *f, char *name)
 {
 char	buf[MAXBUF+1];
+char	*rest;
 int		got;
-char	type;
+char	type, otype;
 int		line=0;
 ObjF	obj =0;
 int		len;
 int		weak;
+int		size;
+int		val;
 Sym		nsym = 0,sym;
 Sym		*found;
 
 	/* tag end of buffer */
 	buf[MAXBUF]='X';
 
-	while ( EOF != (got = fscanf(f, THEFMT, buf, &type)) ) {
+	while ( fgets(buf, sizeof(buf), f) ) {
+
+		/* scan the initial string and chop everything beyond the first whitespace off */
+		for (rest = buf; *rest && ' '!= *rest && '\t'!=*rest && '\n'!=*rest; rest++)
+			/* nothing else to do */;
+
+		got = (rest == buf) ? 0 : 1;
+		if ( *rest )
+			*rest++ = 0;
+		
+		if ( got && *rest )
+			got += sscanf(rest, THEFMT, &otype, &val, &size);
+
 		line++;
+
 		if ( !buf[MAXBUF] ) {
 			fprintf(stderr,"Scanner buffer overrun\n");
 			return -1;
 		}
 		switch (got) {
 			default:
-				fprintf(stderr,"Unable to read %s/line %i (%i conversions of '%s')\n",name,line,got,THEFMT);
+				fprintf(stderr,"Unable to read %s/line %i (%i conversions of '%s')\n",name,line,got,STRFMT""THEFMT);
 				return -1;
 
 			case 1:
@@ -602,6 +622,13 @@ Sym		*found;
 			break;
 
 			case 2:
+			case 3: size = -1;
+			case 4:
+				switch (got) {
+					case 2:	size = -1; break; /* probably an undefined symbol */
+					case 3: size =  0; break; /* some defined syms have size not set -- treat as 0 */
+					default: break;
+				}
 				if (!obj) {
 					char *dot, *slash,*nmbuf;
 					fprintf(stderr,"Warning: Symbol without object file??\n");
@@ -623,13 +650,21 @@ Sym		*found;
 					free(nmbuf);
 				}
 
-				type = TOUPPER(type);
+				type = TOUPPER(otype);
 
 				if ( !nsym )
 					assert( nsym = calloc(1,sizeof(*nsym)) );
 
 				nsym->name = buf;
 
+				if ( -1==size && 'U' != type ) {
+					fprintf(stderr,"Warning: '%s' (type '%c') has unknown size; setting to zero\n",
+							nsym->name, type);
+					size = 0;
+				}
+
+				nsym->size = size;
+				
 				assert( found = (Sym*) tsearch(nsym, &symTbl, symcmp) );
 				if ( *found == nsym ) {
 #if DEBUG & DEBUG_TREE
@@ -638,7 +673,7 @@ Sym		*found;
 					nsym->name = stralloc(strlen(buf) + 1 + TYPESZ) + TYPESZ; /* store the type in name[-1] */
 					strcpy(nsym->name, buf);
 #ifdef TYPE
-					TYPE(nsym) = (char)type;
+					TYPE(nsym) = (char)otype;
 #endif
 					nsym = 0;
 				} else {
@@ -648,7 +683,7 @@ Sym		*found;
 #endif
 
 #ifdef TYPE
-					if (  type != TYPE(*found) ) {
+					if (  type != TOUPPER(TYPE(*found)) ) {
 						int warn, override, nweak;
 
 						/* for some unknown reason, there seem to be global symbols
@@ -669,7 +704,8 @@ Sym		*found;
 						override = ('U' == TYPE(*found));
 
 						if (override) {
-							TYPE(*found) = type;
+							TYPE(*found) = otype;
+							assert( -1 != ((*found)->size = size) );
 						}
 					}
 #endif
@@ -1378,7 +1414,7 @@ int		rval = 0;
 			if (XREF_NEXT(r)) {
 				int isCommon = 0;
 #ifdef TYPE
-				isCommon = 'C' == TYPE(f->exports[i].sym);
+				isCommon = 'C' == TOUPPER(TYPE(f->exports[i].sym));
 #endif
 
 				if ( !isCommon) {
@@ -1678,7 +1714,7 @@ int		n;
 	for ( ; f; f = f->link.next ) {
 		fprintf(feil,"/* "); printObjName(feil,f); fprintf(feil,": */\n");
 		for ( n = 0; n < f->nexports; n++ ) {
-			fprintf(feil,"EXTERN( %s )\n", f->exports[n].sym->name);
+			fprintf(feil,"EXTERN( %s ) /* size %i */\n", f->exports[n].sym->name, f->exports[n].sym->size);
 		}
 	}
 	return 0;
@@ -1700,13 +1736,120 @@ writeScript(FILE *feil, int optionalOnly)
 	return 0;
 }
 
+static const char *getsname(Sym ps, char **pstripped)
+{
+char *chpt;
+const char *sname = ps->name;
+
+	if ( pstripped ) {
+		*pstripped = strdup(sname);
+#ifdef LINKER_VERSION_SEPARATOR
+		if ( chpt = strchr(*pstripped, LINKER_VERSION_SEPARATOR) ) {
+			*chpt = 0;
+		}
+#endif
+	}
+	return sname;
+}
+
+/*
+ * Write symbol definitions in C source form for all members of a link set
+ * to 'feil'. A 'title' may be added as a C-style comment.
+ *
+ * The output is suitable for building into CEXP applications
+ */
+static int
+writeSymdefs(FILE *feil, LinkSet s, char *title, int pass)
+{
+ObjF	f = s->set;
+int		n;
+int     i;
+
+	if ( !f )
+		return 0;
+
+	if (title)
+		fprintf(feil,"/* ----- %s Link Set ----- */\n\n", title);
+
+if ( 0 == pass ) {
+	for ( i=0 ; f; f = f->link.next ) {
+		fprintf(feil,"/* "); printObjName(feil,f); fprintf(feil,": */\n");
+		for ( n = 0; n < f->nexports; n++ ) {
+			char *stripped;
+			getsname(f->exports[n].sym, &stripped);
+			fprintf(feil,"extern int "DUMMY_ALIAS_PREFIX"%s%i;\n",title,i);
+			fprintf(feil,"asm(\".set "DUMMY_ALIAS_PREFIX"%s%i,%s\\n\");\n",title,i,stripped);
+			free(stripped);
+			i++;
+		}
+	}
+} else {
+	for ( i=0 ; f; f = f->link.next ) {
+		fprintf(feil,"/* "); printObjName(feil,f); fprintf(feil,": */\n");
+		for ( n = 0; n < f->nexports; n++ ) {
+			Sym  s      = f->exports[n].sym;
+			const char *sname = getsname(s,0);
+			char t      = TYPE(s);
+			char ut     = toupper(t);
+			fprintf(feil,"\t{\n");
+			fprintf(feil,"\t\t.name        = \"%s\",\n", sname);
+			fprintf(feil,"\t\t.value.ptv   =(void*)&"DUMMY_ALIAS_PREFIX"%s%i,\n",title,i);
+			fprintf(feil,"\t\t.value.type  =%s,\n",      'T'==t ? "TFuncP" : "TVoid");
+			fprintf(feil,"\t\t.size        =%i,\n",      s->size);
+			fprintf(feil,"\t\t.flags       =0");
+				if ( isupper(t) )
+					fprintf(feil,"|CEXP_SYMFLG_GLBL");
+				if ( ( 'W' == ut || 'V' == ut ) &&
+				     strcmp("cexpSystemSymbols",sname) )
+					fprintf(feil,"|CEXP_SYMFLG_WEAK");
+			fprintf(feil,",\n");
+			fprintf(feil,"\t},\n");
+			i++;
+		}
+	}
+}
+	return 0;
+}
+
+
+/*
+ * Generate a Cexp symbol table source file. Adding this to the application
+ * automatically triggers linkage of the optional link sets.
+ */
+int
+writeSource(FILE *feil, int optionalOnly)
+{
+int pass;
+	for ( pass = 0; pass < 2; pass++ ) {
+		if ( 0== pass )
+			fprintf(feil,"#include <cexpsyms.h>\n");
+		else
+			fprintf(feil,"\n\nstatic CexpSymRec systemSymbols[] = {\n");
+		if ( !optionalOnly ) {
+			writeSymdefs(feil, &appLinkSet, "Application", pass);
+			fputc('\n',feil);
+		}
+
+		writeSymdefs(feil, &optionalLinkSet, "Optional", pass);
+		if ( 1 == pass ) {
+			fprintf(feil,"\t{\n");
+			fprintf(feil,"\t0, /* terminating record */\n");
+			fprintf(feil,"\t},\n");
+			fprintf(feil,"};\n");
+			fprintf(feil,"CexpSym cexpSystemSymbols = systemSymbols;\n");
+		}
+}
+	return 0;
+}
+
+
 static void 
 usage(char *nm)
 {
 char *strip = strrchr(nm,'/');
 	if (strip)
 		nm = strip+1;
-	fprintf(stderr,"\nUsage: %s [-Odfhilmqsu] [-A main_symbol] [-L path] [-o optional_list] [-x exclude_list] [-e script_file] nm_files\n\n", nm);
+	fprintf(stderr,"\nUsage: %s [-Odfhilmqsu] [-A main_symbol] [-L path] [-o optional_list] [-x exclude_list] [-e script_file] [-C src_file] nm_files\n\n", nm);
 	fprintf(stderr,"   Object file dependency analysis; the input files must be\n");
 	fprintf(stderr,"   created with 'nm -g -fposix'.\n\n");
 	fprintf(stderr,"(This is ldep $Revision$ by Till Straumann <strauman@slac.stanford.edu>)\n\n");
@@ -1736,6 +1879,7 @@ char *strip = strrchr(nm,'/');
 	fprintf(stderr,"                    ONLY objects listed in '-o' files are.\n");
 	fprintf(stderr,"     -d:   show all module dependencies (huge amounts of data! -- use '-l', '-u')\n");
 	fprintf(stderr,"     -e:   on success, generate a linker script 'script_file' with EXTERN statements\n");
+	fprintf(stderr,"     -C:   on success, generate a C-source file with CEXP symbol table definitions\n");
 	fprintf(stderr,"     -f:   be less paranoid when scanning symbols: accept 'local symbols' (map all\n");
 	fprintf(stderr,"           types to upper-case) and assume unrecognized symbol types ('?') are 'U'\n");
 	fprintf(stderr,"     -h:   print this message.\n");
@@ -1854,6 +1998,7 @@ main(int argc, char **argv)
 FILE	*feil         = stdin;
 FILE	*scrf         = 0;
 char	*scrn         = 0;
+char    *srcn         = 0;
 ObjF	lastAppObj    = 0; 
 SymRec	mainSym       = {0};
 ProcTab	procTab		  = 0;
@@ -1868,7 +2013,7 @@ Sym		*found;
 
 	logf = stdout;
 
-	while ( (ch=getopt(argc, argv, "OFL:A:qhifsdmlux:o:e:")) >= 0 ) {
+	while ( (ch=getopt(argc, argv, "OC:FL:A:qhifsdmlux:o:e:")) >= 0 ) {
 		switch (ch) { 
 			default: fprintf(stderr, "Unknown option '%c'\n",ch);
 					 exit(1);
@@ -1915,6 +2060,8 @@ Sym		*found;
 			case 'm': options |= OPT_MULTIDEFS;
 			break;
 			case 'e': scrn = optarg;
+			break;
+			case 'C': srcn = optarg;
 			break;
 		}
 	}
@@ -2062,6 +2209,17 @@ Sym		*found;
 			exit (1);
 		}
 		writeScript(scrf, options & OPT_NO_APPSET);
+		fclose(scrf);
+		fprintf(logf,"done.\n");
+	}
+	if ( srcn ) {
+		fprintf(logf,"Writing CEXP symbol table source file to '%s'...", srcn);
+		if ( !(scrf = fopen(srcn,"w")) ) {
+			perror("opening source file");
+			fprintf(logf,"opening file failed.\n");
+			exit (1);
+		}
+		writeSource(scrf, options & OPT_NO_APPSET);
 		fclose(scrf);
 		fprintf(logf,"done.\n");
 	}
