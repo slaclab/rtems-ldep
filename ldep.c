@@ -684,9 +684,6 @@ bail:
 						fprintf(stderr,"Unknown symbol type '%c' (line %i)\n",type,line);
 					return -1;
 
-					case 'w': /* powerpc-rtems-gcc has, for unknown reasons, global symbols
-							   * of this type in its startfiles...
-							   */
 					case 'W':
 					case 'V': weak = 1;
 					case 'D':
@@ -714,6 +711,10 @@ bail:
 					case '?':
 							  if ( !force ) goto bail;
 							  /* else: fall thru / less paranoia */
+
+					case 'w': /* powerpc-rtems-gcc has, for unknown reasons, global symbols
+							   * of this type in its startfiles...
+							   */
 
 					case 'U':
 							  {
@@ -1509,13 +1510,16 @@ static int myugc(int ch, char **pchpt, FILE *f)
  *
  * RETURNS: 0 on success,
  *          NONZERO on failure:
- *             -1 list file not found
- *             -2 listed object not found
+ *             -4 list file not found
  *             -3 listed object member name needs more qualification
- *             -4 listed object member of Application link set
+ *             -2 listed object not found
+ *             -1 listed object member of Application link set
+ *                (this error is ignored 
+ *             These errors may be ignored by setting the sloppyness
+ *             (makes probably only sense for sloppy < 2)
  */
 int
-processFile(ProcTab pt)
+processFile(ProcTab pt, int sloppy)
 {
 FILE *remf;
 char buf[MAXBUF+1];
@@ -1532,7 +1536,7 @@ char *comment;
 						pt->linkNotUnlink  ? "optional" : "exclude",
 						pt->fname,
 						strerror(errno));
-		return -1;
+		return -4;
 	}
 
 	fprintf(logf,
@@ -1542,7 +1546,7 @@ char *comment;
 			optionalLinkSet.name);
 
 	line = 0;
-	while ( !rval && fgets(buf, MAXBUF+1, remf) ) {
+	while ( rval >= 0 && fgets(buf, MAXBUF+1, remf) ) {
 		line++;
 
 		if (!buf[MAXBUF]) {
@@ -1550,7 +1554,7 @@ char *comment;
 							pt->fname,
 							line);
 			fclose(remf);
-			return -1;
+			return -5;
 		}
 
 		/* does a comment start on this line
@@ -1602,11 +1606,22 @@ fprintf(debugf,"Scanned '%s'\n",buf); continue;
 
 		got = fileListFind(buf, &pobj);
 
+		rval = sloppy;
 
 		if ( 0 == got ) {
-			fprintf(stderr,"Object '%s' not found!\n", buf);
-			rval = -2;
+			char *fmt = "Object '%s' not found!\n";
+			if ( (rval -= 2) >=0 ) {
+				if ( ! (verbose & DEBUG_UNLINK) ) {
+					/* We didn't log so far and the stderr message may
+				 	* get lost...
+				 	*/
+					fprintf(logf, fmt, buf);
+				}
+				fprintf(stderr,"Warning: ");
+			}
+			fprintf(stderr, fmt, buf);
 		} else if ( got > 1 ) {
+			rval -= 3;
 			fprintf(stderr,"Multiple occurrences of '%s':\n",buf);
 			for (i=0; i<got; i++) {
 				fputc(' ',stderr);
@@ -1615,17 +1630,25 @@ fprintf(debugf,"Scanned '%s'\n",buf); continue;
 				fputc('\n',stderr);
 			}
 			fprintf(stderr,"please be more specific!\n",buf);
-			rval = -3;
 		} else  {
 			if ( pt->linkNotUnlink ) {
 				if ( 0 == (*pobj)->link.anchor ) {
 					(*pobj)->link.anchor = &optionalLinkSet;
 					sprintf(buf,"<SCRIPT>'%s'",pt->fname);
-					rval = linkObj( *pobj, buf );
+					rval -= linkObj( *pobj, buf );
 				}
 			} else if ( unlinkObj(*pobj) ) {
-				fprintf(stderr,"Object '%s' couldn't be removed; probably it's needed by the application\n", buf);
-				rval = -4;
+				char *fmt = "Object '%s' couldn't be removed; probably it's needed by the application\n";
+				if ( (rval -= 1) >= 0 ) {
+					if ( ! (verbose & DEBUG_UNLINK) ) {
+						/* We didn't log so far and the stderr message may
+					 	* get lost...
+					 	*/
+						fprintf(logf, fmt, buf);
+					}
+					fprintf(stderr,"Warning: ");
+				}
+				fprintf(stderr, fmt, buf);
 			}
 		}
 	}
@@ -1700,6 +1723,7 @@ char *strip = strrchr(nm,'/');
 	fprintf(stderr,"           (directly or indirectly) needed by the object defining 'main_symbol' is\n");
 	fprintf(stderr,"           mandatory.\n");
 	fprintf(stderr,"           NOTE: The first 'nm_file' is NOT treated special if this option is used.\n");
+	fprintf(stderr,"     -F:   tolerate/ignore failure when processing 'exclude_lists'\n");
 	fprintf(stderr,"     -L:   add 'path' to search path for 'nm_files', 'optional_lists' and 'exclude_lists'\n");
 	fprintf(stderr,"           NOTE: if at least one '-L' is present, '.' must explicitely added.'\n");
 	fprintf(stderr,"     -O:   when generating a script (see -e), only list the optional link set\n");
@@ -1822,6 +1846,7 @@ SymRec	sym = {0};
 #define OPT_QUIET			(1<<3)
 #define OPT_MULTIDEFS		(1<<4)
 #define OPT_NO_APPSET		(1<<5)
+#define OPT_SLOPPY_UNLINK	(1<<6)
 
 int
 main(int argc, char **argv)
@@ -1843,7 +1868,7 @@ Sym		*found;
 
 	logf = stdout;
 
-	while ( (ch=getopt(argc, argv, "OL:A:qhifsdmlux:o:e:")) >= 0 ) {
+	while ( (ch=getopt(argc, argv, "OFL:A:qhifsdmlux:o:e:")) >= 0 ) {
 		switch (ch) { 
 			default: fprintf(stderr, "Unknown option '%c'\n",ch);
 					 exit(1);
@@ -1873,6 +1898,8 @@ Sym		*found;
 			case 's': options |= OPT_SHOW_SYMS;
 			break;
 			case 'q': options |= OPT_QUIET;
+			break;
+			case 'F': options |= OPT_SLOPPY_UNLINK;
 			break;
 			case 'o': procTab = realloc(procTab, sizeof(*procTab) * (nProc+1));
 					  procTab[nProc].fname         = optarg;
@@ -1980,7 +2007,11 @@ Sym		*found;
 	}
 
 	for ( i=0; i<nProc; i++ ) {
-		if (processFile(&procTab[i]))
+#define F_SLOPPYNESS	1
+		/* tolerate failure to unlink due to dependency on app link set */
+		if (F_SLOPPYNESS +
+			processFile( &procTab[i],
+						(options & OPT_SLOPPY_UNLINK) ? F_SLOPPYNESS : 0) < 0 )
 			exit(1);
 	}
 
