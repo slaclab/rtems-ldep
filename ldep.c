@@ -333,6 +333,13 @@ ObjF *fileListIndex = 0;
 /* The global symbol table (a binary tree) */
 void *symTbl = 0;
 
+/* Global table of search paths */
+static char *defPaths[]={"."};
+
+char **searchPaths    = 0;
+int    numSearchPaths = 0;
+int    maxPathLen     = 0;
+
 /*
  * Access the first real file (the very first node in the list
  * is the 'undefSymPod', i.e. a container holding/"exporting" all
@@ -355,6 +362,22 @@ const Sym sa=(const Sym)a, sb=(const Sym)b;
 	return strcmp(sa->name, sb->name);
 }
 
+/* find and open a file */
+FILE *
+ffind(char *fnam)
+{
+FILE *rval = 0;
+char *buf  = malloc(strlen(fnam) + maxPathLen + 2);
+int  i;
+
+	for (i=0; i<numSearchPaths && !rval; i++) {
+		sprintf(buf,"%s/%s",searchPaths[i],fnam);
+		rval = fopen(buf,"r");
+	}
+	free(buf);
+	return rval;
+}
+	
 /*
  * Fixup an object, i.e. set final values for pointers at a time
  * when no more 'reallocs' need to be done.
@@ -1480,16 +1503,18 @@ char *comment;
 
 	buf[MAXBUF] = 'X'; /* tag end of buffer */
 
-	if ( ! (remf=fopen(pt->fname,"r")) ) {
-		sprintf(buf,"opening list file '%s'", pt->fname);
-		perror(buf);
+	if ( ! (remf=ffind(pt->fname)) ) {
+		fprintf(stderr,	"Opening %s_list file '%s': %s\n",
+						pt->linkNotUnlink  ? "optional" : "exclude",
+						pt->fname,
+						strerror(errno));
 		return -1;
 	}
 
 	fprintf(logf,
-			"Processing list of files ('%s') to %slink from %s link set\n",
+			"Processing list of files ('%s') to %s %s link set\n",
 			pt->fname,
-			pt->linkNotUnlink ? "" : "un",
+			pt->linkNotUnlink ? "add to" : "remove from",
 			optionalLinkSet.name);
 
 	line = 0;
@@ -1533,12 +1558,23 @@ char *comment;
 			/* that's it */;
 		*comment = 0;
 
-		if (!*buf)
+		if ( (i=strlen(buf)) < 1 )
 			continue; /* left an empty buffer */
 
 #if DEBUG & DEBUG_COMMENT
 fprintf(debugf,"Scanned '%s'\n",buf); continue;
 #endif
+
+		/*
+		 * ignore lines not terminating with a ':'; thus we
+		 * can process ordinary name lists :-)
+		 */
+
+		if ( ':' != buf[--i] ) {
+			continue;
+		}
+		/* strip ':' */
+		buf[i] = 0;
 
 		got = fileListFind(buf, &pobj);
 
@@ -1557,10 +1593,12 @@ fprintf(debugf,"Scanned '%s'\n",buf); continue;
 			fprintf(stderr,"please be more specific!\n",buf);
 			rval = -3;
 		} else  {
-			if ( pt->linkNotUnlink && 0 == (*pobj)->link.anchor ) {
-				(*pobj)->link.anchor = &optionalLinkSet;
-				sprintf(buf,"<SCRIPT>'%s'",pt->fname);
-				rval = linkObj( *pobj, buf );
+			if ( pt->linkNotUnlink ) {
+				if ( 0 == (*pobj)->link.anchor ) {
+					(*pobj)->link.anchor = &optionalLinkSet;
+					sprintf(buf,"<SCRIPT>'%s'",pt->fname);
+					rval = linkObj( *pobj, buf );
+				}
 			} else if ( unlinkObj(*pobj) ) {
 				fprintf(stderr,"Object '%s' couldn't be removed; probably it's needed by the application\n", buf);
 				rval = -4;
@@ -1621,7 +1659,7 @@ usage(char *nm)
 char *strip = strrchr(nm,'/');
 	if (strip)
 		nm = strip+1;
-	fprintf(stderr,"\nUsage: %s [-dfhilmqsux] [-A main_symbol] [-a addition_list] [-r removal_list] [-o log_file] [-e script_file] [nm_files]\n\n", nm);
+	fprintf(stderr,"\nUsage: %s [-Odfhilmqsu] [-A main_symbol] [-L path] [-o optional_list] [-x exclude_list] [-e script_file] nm_files\n\n", nm);
 	fprintf(stderr,"   Object file dependency analysis; the input files must be\n");
 	fprintf(stderr,"   created with 'nm -g -fposix'.\n\n");
 	fprintf(stderr,"(This is ldep $Revision$ by Till Straumann <strauman@slac.stanford.edu>)\n\n");
@@ -1638,10 +1676,16 @@ char *strip = strrchr(nm,'/');
 	fprintf(stderr,"           (directly or indirectly) needed by the object defining 'main_symbol' is\n");
 	fprintf(stderr,"           mandatory.\n");
 	fprintf(stderr,"           NOTE: The first 'nm_file' is NOT treated special if this option is used.\n");
-	fprintf(stderr,"     -a:   add a list of objects from the link - name them, one per line, in\n");
-    fprintf(stderr,"           the file 'removal_list'\n");
-	fprintf(stderr,"           NOTE: multiple '-a' and '-r' options may be present. The respective files\n");
-	fprintf(stderr,"                 are processed in the order the options are given on the command line\n");
+	fprintf(stderr,"     -L:   add 'path' to search path for 'nm_files', 'optional_lists' and 'exclude_lists'\n");
+	fprintf(stderr,"           NOTE: if at least one '-L' is present, '.' must explicitely added.'\n");
+	fprintf(stderr,"     -O:   when generating a script (see -e), only list the optional link set\n");
+	fprintf(stderr,"     -o:   add a list of optional objects to the link - name them, one per line, in\n");
+    fprintf(stderr,"           the file 'optional_list'. Object names must be appended a ':', e.g. 'blah.o:'!\n");
+	fprintf(stderr,"           NOTES: - multiple '-o' and '-x' options may be present. The respective files\n");
+	fprintf(stderr,"                    are processed in the order the options are given on the command line\n");
+	fprintf(stderr,"                  - if at least one '-o' option is present, the 'optional nm_files' are\n");
+	fprintf(stderr,"                    merely added to the database but NOT linked/added to the application,\n");
+	fprintf(stderr,"                    ONLY objects listed in '-o' files are.\n");
 	fprintf(stderr,"     -d:   show all module dependencies (huge amounts of data! -- use '-l', '-u')\n");
 	fprintf(stderr,"     -e:   on success, generate a linker script 'script_file' with EXTERN statements\n");
 	fprintf(stderr,"     -f:   be less paranoid when scanning symbols: accept 'local symbols' (map all\n");
@@ -1650,15 +1694,15 @@ char *strip = strrchr(nm,'/');
 	fprintf(stderr,"     -i:   enter interactive mode\n");
 	fprintf(stderr,"     -l:   log info about the linking process\n");
 	fprintf(stderr,"     -m:   check for symbols defined in multiple files\n");
-	fprintf(stderr,"     -o:   log messages to 'log_file' instead of 'stdout' (default)\n");
 	fprintf(stderr,"     -q:   quiet; just build database and do basic checks\n");
-	fprintf(stderr,"     -r:   remove a list of objects from the link - name them, one per line, in\n");
-	fprintf(stderr,"           the file 'removal_list'\n");
-	fprintf(stderr,"           NOTE: if a mandatory object depends on an object to be removed, removal\n");
-	fprintf(stderr,"                 is rejected.\n");
+	fprintf(stderr,"     -x:   exclude/remove a list of objects from the link - name them, one per line, in\n");
+	fprintf(stderr,"           the file 'exclude_list'\n");
+	fprintf(stderr,"           NOTES: - if a mandatory object depends on an object to be removed, removal\n");
+	fprintf(stderr,"                    is rejected.\n");
+	fprintf(stderr,"                  - object names must be appended a ':', e.g. 'blah.o:' - other lines are\n");
+	fprintf(stderr,"                    ignored. Thus, output from 'nm -fposix' is accepted.\n");
 	fprintf(stderr,"     -s:   show all symbol info (huge amounts of data! -- use '-l', '-u')\n");
 	fprintf(stderr,"     -u:   log info about the unlinking process\n");
-	fprintf(stderr,"     -x:   when generating a script (see -e), only list the optional link set\n");
 }
 
 /* Primitive interactive command interpreter (database queries) */
@@ -1758,6 +1802,7 @@ ProcTab	procTab		  = 0;
 int		nProc         = 0;
 char	*mainName     = 0;
 int		options       = 0;
+int		hasOptional   = 0;
 int		i,nfile,ch;
 ObjF	f;
 LinkSet	linkSet;
@@ -1765,7 +1810,7 @@ Sym		*found;
 
 	logf = stdout;
 
-	while ( (ch=getopt(argc, argv, "a:A:qhifsdmluxr:o:e:")) >= 0 ) {
+	while ( (ch=getopt(argc, argv, "OL:A:qhifsdmlux:o:e:")) >= 0 ) {
 		switch (ch) { 
 			default: fprintf(stderr, "Unknown option '%c'\n",ch);
 					 exit(1);
@@ -1775,11 +1820,14 @@ Sym		*found;
 				exit(0);
 
 
+			case 'L': searchPaths = realloc(searchPaths, sizeof(*searchPaths) * (numSearchPaths + 1));
+			          searchPaths[numSearchPaths++] = optarg;
+			break;
 			case 'A': mainSym.name = optarg;
 			break;
 			case 'l': verbose |= DEBUG_LINK;
 			break;
-			case 'x': options |= OPT_NO_APPSET;
+			case 'O': options |= OPT_NO_APPSET;
 			break;    
 			case 'u': verbose |= DEBUG_UNLINK;
 			break;
@@ -1793,23 +1841,18 @@ Sym		*found;
 			break;
 			case 'q': options |= OPT_QUIET;
 			break;
-			case 'a': procTab = realloc(procTab, sizeof(*procTab) * (nProc+1));
+			case 'o': procTab = realloc(procTab, sizeof(*procTab) * (nProc+1));
 					  procTab[nProc].fname         = optarg;
 					  procTab[nProc].linkNotUnlink = 1;
 					  nProc++;
+					  hasOptional++;
 			break;
-			case 'r': procTab = realloc(procTab, sizeof(*procTab) * (nProc+1));
+			case 'x': procTab = realloc(procTab, sizeof(*procTab) * (nProc+1));
 					  procTab[nProc].fname         = optarg;
 					  procTab[nProc].linkNotUnlink = 0;
 					  nProc++;
 			break;
 			case 'm': options |= OPT_MULTIDEFS;
-			break;
-			case 'o':
-				if ( !(logf=fopen(optarg,"w")) ) {
-					perror("opening log file");
-					exit(1);
-				}
 			break;
 			case 'e': scrn = optarg;
 			break;
@@ -1820,10 +1863,20 @@ Sym		*found;
 
 	nfile = optind;
 
+	if ( 0 == numSearchPaths ) {
+		/* implicit default */
+		searchPaths = defPaths;
+		numSearchPaths = sizeof(defPaths) / sizeof(defPaths[0]);
+	}
+	for ( i = 0; i<numSearchPaths; i++ ) {
+		if ( (ch = strlen(searchPaths[i])) > maxPathLen )
+			maxPathLen = ch;
+	}
+
 	do {
 		char *nm = nfile < argc ? argv[nfile] : "<stdin>";
-		if ( nfile < argc && !(feil=fopen(nm,"r")) ) {
-			perror("opening file");
+		if ( nfile < argc && !(feil=ffind(nm)) ) {
+			fprintf(stderr,"Opening nm_file '%s': %s\n", nm, strerror(errno));
 			exit(1);
 		}
 		if (scan_file(feil,nm)) {
@@ -1874,24 +1927,30 @@ Sym		*found;
 		assert( !f->link.anchor );
 		f->link.anchor = linkSet;
 		linkObj(f, mainSym.name);
-		linkSet = &optionalLinkSet;
+		linkSet = hasOptional ? 0 : &optionalLinkSet;
 
 		/* ignore lastAppObj */
 	}
 
-	for ( f=fileListFirst(); f; f=f->next) {
+	for ( f=fileListFirst(); f && linkSet; f=f->next) {
 		if (!f->link.anchor) {
 			f->link.anchor = linkSet;
 			linkObj(f, 0);
 		}
 		if ( f==lastAppObj )
-			linkSet = &optionalLinkSet;	
+			linkSet = hasOptional ? 0 : &optionalLinkSet;	
 	}
 
 	if ( options & OPT_QUIET ) {
 		fprintf(logf,"OK, that's it for now\n");
 		exit(0);
 	}
+
+	for ( i=0; i<nProc; i++ ) {
+		if (processFile(&procTab[i]))
+			exit(1);
+	}
+
 
 	if ( options & OPT_SHOW_SYMS )
 		twalk(symTbl, symTraceAct);
@@ -1917,12 +1976,8 @@ Sym		*found;
 	}
 
 	fprintf(logf,"Removing undefined symbols\n");
-	unlinkUndefs();
+		unlinkUndefs();
 
-	for ( i=0; i<nProc; i++ ) {
-		if (processFile(&procTab[i]))
-			exit(1);
-	}
 
 	if ( options & OPT_MULTIDEFS ) {
 		checkMultipleDefs(&appLinkSet);
