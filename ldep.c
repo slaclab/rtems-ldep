@@ -564,19 +564,21 @@ Sym		*found;
 				if (!obj) {
 					char *dot, *slash,*nmbuf;
 					fprintf(stderr,"Warning: Symbol without object file??\n");
-				    fprintf(stderr,"-> substituting symbol file name... (%s/line %i)\n",name,line);
 
 					assert( nmbuf = malloc(strlen(name)+5) );
 
 					strcpy( nmbuf, name );
-					slash = strchr(nmbuf, '/');
+					slash = strrchr(nmbuf, '/');
 					dot   = strrchr(nmbuf, '.');
 					if ( !dot || (slash && slash > dot) ) {
 						strcat(nmbuf, ".o");
 					} else {
 						strcpy(dot+1,"o");
 					}
-					obj = createObj(nmbuf);
+					slash = slash ? slash + 1 : nmbuf;
+					obj = createObj( slash );
+
+				    fprintf(stderr,"-> substituting symbol file name, using '%s'... (%s/line %i)\n",slash,name,line);
 					free(nmbuf);
 				}
 
@@ -608,7 +610,10 @@ Sym		*found;
 					if (  type != TYPE(*found) ) {
 						int warn, override, nweak;
 
-						nweak= 'W' == type || 'V' == type;
+						/* for some unknown reason, there seem to be global symbols
+						 * of type 'w' in the compiler startfiles...
+						 */
+						nweak= 'W' == type || 'V' == type || 'w' == type;
 #ifdef __GNUC__
 #warning TODO weak symbols
 #endif
@@ -638,6 +643,9 @@ bail:
 						fprintf(stderr,"Unknown symbol type '%c' (line %i)\n",type,line);
 					return -1;
 
+					case 'w': /* powerpc-rtems-gcc has, for unknown reasons, global symbols
+							   * of this type in its startfiles...
+							   */
 					case 'W':
 					case 'V': weak = 1;
 					case 'D':
