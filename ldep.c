@@ -362,6 +362,18 @@ const Sym sa=(const Sym)a, sb=(const Sym)b;
 	return strcmp(sa->name, sb->name);
 }
 
+/* Compare two library names stripping any path from either */
+static int
+libcmp(const char *a, const char *b)
+{
+register char *tmp;
+	if ( tmp = strrchr(a,'/') )
+		a = tmp+1;
+	if ( tmp = strrchr(b,'/') )
+		b = tmp+1;
+	return strcmp(a,b);
+}
+
 /* find and open a file */
 FILE *
 ffind(char *fnam)
@@ -433,7 +445,7 @@ libAddObj(char *libname, ObjF obj)
 Lib l;
 int i;
 	for (l=libListHead; l; l=l->next) {
-		if ( !strcmp(l->name, libname) )
+		if ( !libcmp(l->name, libname) )
 			break;
 	}
 	if ( !l ) {
@@ -958,13 +970,16 @@ ObjF	*pl;
 static void
 checkSysLinkSet(ObjF f, int depth, void *closure)
 {
+ObjF *reject = closure;
 	if ( f->link.anchor == &appLinkSet ) {
-		if ( verbose & DEBUG_UNLINK &&  ! *(int*)closure ) {
-			fprintf(logf,"  --> rejected because '");
-			printObjName(logf,f);
-			fprintf(logf,"' is needed by app");
+		if ( ! *reject ) {
+		  	if ( verbose & DEBUG_UNLINK ) {
+				fprintf(logf,"  --> rejected because '");
+				printObjName(logf,f);
+				fprintf(logf,"' is needed by app");
+			}
+		*reject = f;
 		}
-		*(int*)closure = 1;
 	}
 }
 
@@ -988,10 +1003,11 @@ int		i;
  *          of the Application link set depend on 'f').
  */
 
-int
+ObjF
 unlinkObj(ObjF f)
 {
-int		reject = 0;
+ObjF	reject = 0;
+int		i;
 
 	if ( !f->link.anchor ) {
 		fputc(' ',logf);
@@ -1014,7 +1030,15 @@ int		reject = 0;
 	} else if ( verbose & DEBUG_UNLINK ) {
 		fprintf(logf,"\n  skipping object '");
 		printObjName(logf,f);
-		fprintf(logf,"'... done.\n");
+		fprintf(logf,"' (");
+		printObjName(logf,reject);
+		fprintf(logf, ":");
+		for ( i = 0; i<reject->nimports; i++) {
+			if (reject->imports[i].obj == f) {
+				fprintf(logf," %s",reject->imports[i].sym->name);
+			}
+		}
+		fprintf(logf,")... done.\n");
 	}
 	depwalkListRelease(f);
 	return reject;
@@ -1302,9 +1326,9 @@ int		rval;
 
 	/* matching object names; compare libraries */
 	if (obja->lib) {
-		if (objb->lib)
-			return strcmp(obja->lib->name, objb->lib->name);
-		else
+		if (objb->lib) {
+			return libcmp(obja->lib->name, objb->lib->name);
+		} else
 			return 1; /* a has library name, b has not b<a */
 	}
 	rval = objb->lib ? -1 : 0;
@@ -1417,7 +1441,7 @@ int		rval = 0;
 
 	if (po && *name) {
 		for (l=libListHead; l; l=l->next) {
-			if ( !strcmp(l->name, name) ) {
+			if ( !libcmp(l->name, name) ) {
 				break;
 			}
 		}
