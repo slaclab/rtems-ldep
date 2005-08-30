@@ -1582,7 +1582,7 @@ char *comment;
 			optionalLinkSet.name);
 
 	line = 0;
-	while ( rval >= 0 && fgets(buf, MAXBUF+1, remf) ) {
+	while ( (rval >= 0 || sloppy) && fgets(buf, MAXBUF+1, remf) ) {
 		line++;
 
 		if (!buf[MAXBUF]) {
