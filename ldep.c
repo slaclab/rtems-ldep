@@ -1035,13 +1035,16 @@ int		i;
  * Remove an object and all objects depending on it
  * (i.e. the files which would trigger linkage of 'f')
  * from its link set.
+ * 
+ * if 'checkOnly' is nonzero, the real work is not done
+ * but the return value indicates if it would succeed.
  *
  * RETURNS: 0 on success, NONZERO on failure (i.e. members
  *          of the Application link set depend on 'f').
  */
 
 ObjF
-unlinkObj(ObjF f)
+unlinkObj(ObjF f, int checkOnly)
 {
 ObjF	reject = 0;
 int		i;
@@ -1061,21 +1064,23 @@ int		i;
 	 */
 	workListIterate(f, checkSysLinkSet, &reject);
 
-	if ( ! reject ) {
-		workListIterate(f, doUnlink, 0);
-		workListIterate(f, checkSanity, 0);
-	} else if ( verbose & DEBUG_UNLINK ) {
-		fprintf(logf,"\n  skipping object '");
-		printObjName(logf,f);
-		fprintf(logf,"' (");
-		printObjName(logf,reject);
-		fprintf(logf, ":");
-		for ( i = 0; i<reject->nimports; i++) {
-			if (reject->imports[i].obj == f) {
-				fprintf(logf," %s",reject->imports[i].sym->name);
+	if ( !checkOnly ) {
+		if ( ! reject ) {
+			workListIterate(f, doUnlink, 0);
+			workListIterate(f, checkSanity, 0);
+		} else if ( verbose & DEBUG_UNLINK ) {
+			fprintf(logf,"\n  skipping object '");
+			printObjName(logf,f);
+			fprintf(logf,"' (");
+			printObjName(logf,reject);
+			fprintf(logf, ":");
+			for ( i = 0; i<reject->nimports; i++) {
+				if (reject->imports[i].obj == f) {
+					fprintf(logf," %s",reject->imports[i].sym->name);
+				}
 			}
+			fprintf(logf,")... done.\n");
 		}
-		fprintf(logf,")... done.\n");
 	}
 	depwalkListRelease(f);
 	return reject;
@@ -1100,7 +1105,18 @@ ObjF	q = &undefSymPod;
 	for (i=0, ex=q->exports; i<q->nexports; i++,ex++) {
 		if ( verbose & DEBUG_UNLINK )
 			fprintf(logf,"removing objects depending on '%s'...", ex->sym->name);
-		while (ex->sym->importedFrom && 0==unlinkObj(ex->sym->importedFrom->obj))
+		for ( p = ex->sym->importedFrom; p; p=XREF_NEXT(p) ) {
+			/* If any importer of this symbol rejects unlinking
+			 * we probably deal with a startup file / linker script 
+			 * symbol and just skip it...
+			 */
+			if ( unlinkObj(p->obj, 1) ) {
+				if ( verbose & DEBUG_UNLINK )
+					fprintf(logf," (probably a linker script / startfile symbol).\n");
+				goto skipped;
+			}
+		}
+		while (ex->sym->importedFrom && 0==unlinkObj(ex->sym->importedFrom->obj, 0))
 			/* nothing else to do */;
 		if (ex->sym->importedFrom) {
 			/* ex->sym.importedFrom must depend on a system module, skip to the next */
@@ -1111,12 +1127,14 @@ ObjF	q = &undefSymPod;
 					printObjName(logf,p->obj);
 					fprintf(logf,"'\n");
 				}
-				while ( (n=XREF_NEXT(p)) && 0 == unlinkObj(n->obj) )
+				while ( (n=XREF_NEXT(p)) && 0 == unlinkObj(n->obj, 0) )
 					/* nothing else to do */;
 			} while ( p = n ); /* reached a system module; skip */
 		}
 		if ( verbose & DEBUG_UNLINK )
 			fprintf(logf,"done.\n");
+	skipped:
+		continue;
 	}
 	return 0;
 }
@@ -1673,7 +1691,7 @@ fprintf(debugf,"Scanned '%s'\n",buf); continue;
 					sprintf(buf,"<SCRIPT>'%s'",pt->fname);
 					rval -= linkObj( *pobj, buf );
 				}
-			} else if ( unlinkObj(*pobj) ) {
+			} else if ( unlinkObj(*pobj, 0) ) {
 				char *fmt = "Object '%s' couldn't be removed; probably it's needed by the application\n";
 				if ( (rval -= 1) >= 0 ) {
 					if ( ! (verbose & DEBUG_UNLINK) ) {
