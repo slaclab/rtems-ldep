@@ -180,11 +180,11 @@ typedef struct SymRec_ {
 
 /* struct describing a symbol 'reference', i.e. a 'connection' between a symbol and an object file */
 typedef struct XrefRec_ {
-	Sym			sym;		/* symbol and */
-	ObjF		obj;		/* object file we 'interconnect' */
-	unsigned	multiuse;	/* BITFIELD (assuming pointers are word aligned; LSB is 'weak' flag)
-							 * (questionable attempt to save memory...)
-							 */
+	Sym				sym;		/* symbol and */
+	ObjF			obj;		/* object file we 'interconnect' */
+	unsigned long	multiuse;	/* BITFIELD (assuming pointers are word aligned; LSB is 'weak' flag)
+								 * (questionable attempt to save memory...)
+								 */
 } XrefRec;
 
 /* macros to access 'BITFIELD' members */
@@ -200,7 +200,7 @@ typedef struct XrefRec_ {
 static INLINE void xref_set_next(Xref e, Xref next)
 {
 	e->multiuse &= XREF_FLAGS;
-	e->multiuse |= ((unsigned)next) & ~XREF_FLAGS;
+	e->multiuse |= ((unsigned long)next) & ~XREF_FLAGS;
 }
    
 /* set the 'weak' flag (BITFIELD member) */
@@ -735,7 +735,7 @@ bail:
 							  obj->nexports++;
 							  assert( obj->exports = realloc(obj->exports, sizeof(*obj->exports) * obj->nexports) );
 							  /* check alignment with flags */
-							  assert( 0 == ((unsigned)obj->exports & XREF_FLAGS) );
+							  assert( 0 == ((unsigned long)obj->exports & XREF_FLAGS) );
 							  ex = &obj->exports[obj->nexports - 1];
 							  ex->sym = sym;
 							  ex->obj = obj;
@@ -758,7 +758,7 @@ bail:
 							  obj->nimports++;
 							  assert( obj->imports = realloc(obj->imports, sizeof(*obj->imports) * obj->nimports) );
 							  /* check alignment with flags */
-							  assert( 0 == ((unsigned)obj->imports & XREF_FLAGS) );
+							  assert( 0 == ((unsigned long)obj->imports & XREF_FLAGS) );
 							  im = &obj->imports[obj->nimports - 1];
 							  im->sym = sym;
 							  im->obj = obj;
@@ -787,7 +787,7 @@ const Sym sym = *(const Sym*)pnode;
 		undefSymPod.nexports++;
 		undefSymPod.exports = realloc(undefSymPod.exports, sizeof(*undefSymPod.exports) * undefSymPod.nexports);
 		/* check alignment with flags */
-		assert( 0 == ((unsigned)undefSymPod.exports & XREF_FLAGS) );
+		assert( 0 == ((unsigned long)undefSymPod.exports & XREF_FLAGS) );
 		ex = &undefSymPod.exports[undefSymPod.nexports-1];
 		ex->sym  = sym;
 		ex->obj  = &undefSymPod;
