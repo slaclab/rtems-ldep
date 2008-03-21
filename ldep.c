@@ -212,6 +212,30 @@ static INLINE void xref_set_weak(Xref e, int weak)
 		e->multiuse &= ~XREF_FLG_WEAK;
 }
 
+/* Find the strongest definition/export of symbol 's'.
+ * E.g., if object 'o' has a weak symbol 's'
+ * and object 'q' has a strong symbols 's'
+ * then strongestExport(s) returns o.
+ *
+ * This routine assumes that there can be multiple weak
+ * definitions but only ONE strong definition.
+ */
+static INLINE Xref strongestExport(Sym s)
+{
+Xref r,max = 0;
+
+	if ( (max = s->exportedBy) ) {
+		for ( r=XREF_NEXT(max); r; r=XREF_NEXT(r) ) {
+			if ( !XREF_WEAK(r) ) {
+				/* this definition is not weak */
+				max = r;
+			}
+		}
+	}
+	return max;
+}
+
+
 /* GLOBAL FLAG VARIABLES */
 
 static int	verbose =
@@ -1782,6 +1806,7 @@ writeSymdefs(FILE *feil, LinkSet s, char *title, int pass)
 ObjF	f = s->set;
 int		n;
 int     i;
+Sym     sym;
 
 	if ( !f )
 		return 0;
@@ -1794,7 +1819,10 @@ if ( 0 == pass ) {
 		fprintf(feil,"/* "); printObjName(feil,f); fprintf(feil,": */\n");
 		for ( n = 0; n < f->nexports; n++ ) {
 			char *stripped;
-			getsname(f->exports[n].sym, &stripped);
+			sym = f->exports[n].sym;
+			if ( f != strongestExport( sym )->obj )
+				continue;
+			getsname(sym, &stripped);
 			fprintf(feil,"extern int "DUMMY_ALIAS_PREFIX"%s%i;\n",title,i);
 			fprintf(feil,"asm(\".set "DUMMY_ALIAS_PREFIX"%s%i,%s\\n\");\n",title,i,stripped);
 			free(stripped);
@@ -1805,15 +1833,18 @@ if ( 0 == pass ) {
 	for ( i=0 ; f; f = f->link.next ) {
 		fprintf(feil,"/* "); printObjName(feil,f); fprintf(feil,": */\n");
 		for ( n = 0; n < f->nexports; n++ ) {
-			Sym  s      = f->exports[n].sym;
-			const char *sname = getsname(s,0);
-			char t      = TYPE(s);
+			sym         = f->exports[n].sym;
+			if ( f != strongestExport( sym )->obj )
+				continue;
+			{
+			const char *sname = getsname(sym,0);
+			char t      = TYPE(sym);
 			char ut     = toupper(t);
 			fprintf(feil,"\t{\n");
 			fprintf(feil,"\t\t.name        = \"%s\",\n", sname);
 			fprintf(feil,"\t\t.value.ptv   =(void*)&"DUMMY_ALIAS_PREFIX"%s%i,\n",title,i);
 			fprintf(feil,"\t\t.value.type  =%s,\n",      'T'==t ? "TFuncP" : "TVoid");
-			fprintf(feil,"\t\t.size        =%i,\n",      s->size);
+			fprintf(feil,"\t\t.size        =%i,\n",      sym->size);
 			fprintf(feil,"\t\t.flags       =0");
 				if ( isupper(t) )
 					fprintf(feil,"|CEXP_SYMFLG_GLBL");
@@ -1822,6 +1853,7 @@ if ( 0 == pass ) {
 					fprintf(feil,"|CEXP_SYMFLG_WEAK");
 			fprintf(feil,",\n");
 			fprintf(feil,"\t},\n");
+			}
 			i++;
 		}
 	}
