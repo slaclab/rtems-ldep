@@ -2172,6 +2172,8 @@ Sym		*found;
 			break;
 			case 'C': srcn = optarg;
 			break;
+			case 'U': emitUndefs = 1;
+			break;
 		}
 	}
 
