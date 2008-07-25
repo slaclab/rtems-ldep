@@ -187,6 +187,9 @@ typedef struct XrefRec_ {
 								 */
 } XrefRec;
 
+/* 'forward' declaration of Variables     */
+static ObjFRec undefSymPod;
+
 /* macros to access 'BITFIELD' members */
 #define XREF_FLAGS 		1	/* mask for the flag bit parts of BITFIELD */
 #define XREF_FLG_WEAK	1	/* 'weak' symbol attribute flag */
@@ -233,6 +236,12 @@ Xref r,max = 0;
 		}
 	}
 	return max;
+}
+
+static INLINE int symIsUndef(Sym s)
+{
+Xref r = strongestExport(s);
+	return !r || r->obj == &undefSymPod;
 }
 
 
@@ -1794,6 +1803,41 @@ const char *sname = ps->name;
 	return sname;
 }
 
+static void
+writeSymdecl(FILE *feil, Sym sym, char *title, int *pi)
+{
+char *stripped;
+	getsname(sym, &stripped);
+	fprintf(feil,"extern int "DUMMY_ALIAS_PREFIX"%s%i;\n",title,*pi);
+	fprintf(feil,"asm(\".set "DUMMY_ALIAS_PREFIX"%s%i,%s\\n\");\n",title,*pi,stripped);
+	free(stripped);
+	(*pi)++;
+}
+
+static void
+writeSymdef(FILE *feil, Sym sym, char *title, int *pi)
+{
+const char *sname = getsname(sym,0);
+char t            = TYPE(sym);
+char ut           = toupper(t);
+
+	fprintf(feil,"\t{\n");
+	fprintf(feil,"\t\t.name        = \"%s\",\n", sname);
+	fprintf(feil,"\t\t.value.ptv   =(void*)&"DUMMY_ALIAS_PREFIX"%s%i,\n",title,*pi);
+	fprintf(feil,"\t\t.value.type  =%s,\n",      'T'==t ? "TFuncP" : "TVoid");
+	fprintf(feil,"\t\t.size        =%i,\n",      sym->size);
+	fprintf(feil,"\t\t.flags       =0");
+	if ( isupper(t) )
+		fprintf(feil,"|CEXP_SYMFLG_GLBL");
+	if ( ( 'W' == ut || 'V' == ut ) &&
+			strcmp("cexpSystemSymbols",sname) )
+		fprintf(feil,"|CEXP_SYMFLG_WEAK");
+	fprintf(feil,",\n");
+	fprintf(feil,"\t},\n");
+
+	(*pi)++;
+}
+
 /*
  * Write symbol definitions in C source form for all members of a link set
  * to 'feil'. A 'title' may be added as a C-style comment.
@@ -1801,12 +1845,13 @@ const char *sname = ps->name;
  * The output is suitable for building into CEXP applications
  */
 static int
-writeSymdefs(FILE *feil, LinkSet s, char *title, int pass)
+writeSymdefs(FILE *feil, LinkSet s, char *title, int pass, int genUndefs)
 {
 ObjF	f = s->set;
 int		n;
 int     i;
 Sym     sym;
+int     doHeader;
 
 	if ( !f )
 		return 0;
@@ -1816,45 +1861,48 @@ Sym     sym;
 
 if ( 0 == pass ) {
 	for ( i=0 ; f; f = f->link.next ) {
+		doHeader = 1;
 		fprintf(feil,"/* "); printObjName(feil,f); fprintf(feil,": */\n");
 		for ( n = 0; n < f->nexports; n++ ) {
-			char *stripped;
 			sym = f->exports[n].sym;
 			if ( f != strongestExport( sym )->obj )
 				continue;
-			getsname(sym, &stripped);
-			fprintf(feil,"extern int "DUMMY_ALIAS_PREFIX"%s%i;\n",title,i);
-			fprintf(feil,"asm(\".set "DUMMY_ALIAS_PREFIX"%s%i,%s\\n\");\n",title,i,stripped);
-			free(stripped);
-			i++;
+			writeSymdecl(feil, sym, title, &i);
+		}
+		if ( genUndefs ) {
+			for ( n = 0; n < f->nimports; n++ ) {
+				sym = f->imports[n].sym;
+				if ( symIsUndef(sym) ) {
+					if ( doHeader ) {
+						fprintf(feil,"/* UNDEFINED (hopefully supplied by linker/startfiles); from */\n");
+						doHeader = 0;
+					}
+					writeSymdecl(feil, sym, title, &i);
+				}
+			}
 		}
 	}
 } else {
 	for ( i=0 ; f; f = f->link.next ) {
+		doHeader = 1;
 		fprintf(feil,"/* "); printObjName(feil,f); fprintf(feil,": */\n");
 		for ( n = 0; n < f->nexports; n++ ) {
 			sym         = f->exports[n].sym;
 			if ( f != strongestExport( sym )->obj )
 				continue;
-			{
-			const char *sname = getsname(sym,0);
-			char t      = TYPE(sym);
-			char ut     = toupper(t);
-			fprintf(feil,"\t{\n");
-			fprintf(feil,"\t\t.name        = \"%s\",\n", sname);
-			fprintf(feil,"\t\t.value.ptv   =(void*)&"DUMMY_ALIAS_PREFIX"%s%i,\n",title,i);
-			fprintf(feil,"\t\t.value.type  =%s,\n",      'T'==t ? "TFuncP" : "TVoid");
-			fprintf(feil,"\t\t.size        =%i,\n",      sym->size);
-			fprintf(feil,"\t\t.flags       =0");
-				if ( isupper(t) )
-					fprintf(feil,"|CEXP_SYMFLG_GLBL");
-				if ( ( 'W' == ut || 'V' == ut ) &&
-				     strcmp("cexpSystemSymbols",sname) )
-					fprintf(feil,"|CEXP_SYMFLG_WEAK");
-			fprintf(feil,",\n");
-			fprintf(feil,"\t},\n");
+			writeSymdef(feil, sym, title, &i);
+		}
+		if ( genUndefs ) {
+			for ( n = 0; n < f->nimports; n++ ) {
+				sym = f->imports[n].sym;
+				if ( symIsUndef(sym) ) {
+					if ( doHeader ) {
+						fprintf(feil,"/* UNDEFINED (hopefully supplied by linker/startfiles); from */\n");
+						doHeader = 0;
+					}
+					writeSymdef(feil, sym, title, &i);
+				}
 			}
-			i++;
 		}
 	}
 }
@@ -1876,11 +1924,11 @@ int pass;
 		else
 			fprintf(feil,"\n\nstatic CexpSymRec systemSymbols[] = {\n");
 		if ( !optionalOnly ) {
-			writeSymdefs(feil, &appLinkSet, "Application", pass);
+			writeSymdefs(feil, &appLinkSet, "Application", pass, 1);
 			fputc('\n',feil);
 		}
 
-		writeSymdefs(feil, &optionalLinkSet, "Optional", pass);
+		writeSymdefs(feil, &optionalLinkSet, "Optional", pass, 0);
 		if ( 1 == pass ) {
 			fprintf(feil,"\t{\n");
 			fprintf(feil,"\t0, /* terminating record */\n");
