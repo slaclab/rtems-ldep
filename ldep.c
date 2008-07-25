@@ -256,6 +256,7 @@ static int	verbose =
 	;
 
 static int	force = 0;
+static int  emitUndefs = 0;
 
 #define WARN_UNDEFINED_SYMS (1<<0)
 
@@ -662,6 +663,15 @@ Sym		*found;
 					case 3: size =  0; break; /* some defined syms have size not set -- treat as 0 */
 					default: break;
 				}
+
+				type = TOUPPER(otype);
+
+				if ( 'N' == type && !force ) {
+					fprintf(stderr,"Warning: Ignoring debugging symbol ('N'): %s\n", buf);
+					break;
+				}
+
+
 				if (!obj) {
 					char *dot, *slash,*nmbuf;
 					fprintf(stderr,"Warning: Symbol without object file??\n");
@@ -682,8 +692,6 @@ Sym		*found;
 				    fprintf(stderr,"-> substituting symbol file name, using '%s'... (%s/line %i)\n",slash,name,line);
 					free(nmbuf);
 				}
-
-				type = TOUPPER(otype);
 
 				if ( !nsym )
 					assert( nsym = calloc(1,sizeof(*nsym)) );
@@ -763,6 +771,7 @@ bail:
 					case 'S':
 					case 'A':
 					case 'C':
+					case 'N': /* only get here for 'N' if !force */
 							  {
 							  Xref ex;
 							  obj->nexports++;
@@ -1924,7 +1933,7 @@ int pass;
 		else
 			fprintf(feil,"\n\nstatic CexpSymRec systemSymbols[] = {\n");
 		if ( !optionalOnly ) {
-			writeSymdefs(feil, &appLinkSet, "Application", pass, 1);
+			writeSymdefs(feil, &appLinkSet, "Application", pass, emitUndefs);
 			fputc('\n',feil);
 		}
 
@@ -1978,6 +1987,8 @@ char *strip = strrchr(nm,'/');
 	fprintf(stderr,"     -d:   show all module dependencies (huge amounts of data! -- use '-l', '-u')\n");
 	fprintf(stderr,"     -e:   on success, generate a linker script 'script_file' with EXTERN statements\n");
 	fprintf(stderr,"     -C:   on success, generate a C-source file with CEXP symbol table definitions\n");
+	fprintf(stderr,"     -U:   add undefined symbols in the application link set to the CEXP symbol\n");
+	fprintf(stderr,"           table definitions (assuming they will be supplied by the linker, startfiles or libraries of which no '.nm' file was provided\n");
 	fprintf(stderr,"     -f:   be less paranoid when scanning symbols: accept 'local symbols' (map all\n");
 	fprintf(stderr,"           types to upper-case) and assume unrecognized symbol types ('?') are 'U'\n");
 	fprintf(stderr,"     -h:   print this message.\n");
@@ -2111,7 +2122,7 @@ Sym		*found;
 
 	logf = stdout;
 
-	while ( (ch=getopt(argc, argv, "OC:FL:A:qhifsdmlux:o:e:")) >= 0 ) {
+	while ( (ch=getopt(argc, argv, "OC:FL:A:qhifsdmlux:o:e:U")) >= 0 ) {
 		switch (ch) { 
 			default: fprintf(stderr, "Unknown option '%c'\n",ch);
 					 exit(1);
