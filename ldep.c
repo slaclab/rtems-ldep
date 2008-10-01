@@ -725,24 +725,23 @@ Sym		*found;
 
 #ifdef TYPE
 					if (  type != TOUPPER(TYPE(*found)) ) {
-						int warn, override, nweak;
+						int warn, override, nweak, oweak, f_type;
+
+						f_type = TOUPPER(TYPE(*found));
 
 						/* for some unknown reason, there seem to be global symbols
 						 * of type 'w' in the compiler startfiles...
 						 */
-						nweak= 'W' == type || 'V' == type || 'w' == type;
-#ifdef __GNUC__
-#warning TODO weak symbols
-#endif
+						nweak= 'W' == type   || 'V' == type   || 'w' == type;
+						oweak= 'W' == f_type || 'V' == f_type;
 
-						warn = ( 'U' != TYPE(*found) && 'U' != type );
-						
+						warn = ( 'U' != TYPE(*found) && 'U' != type && !nweak && !oweak );
 				 		if (warn) {
 							fprintf(stderr,"Warning: type mismatch between multiply defined symbols\n");
 					    	fprintf(stderr,"         %s: known as %c, is now %c\n", (*found)->name, TYPE(*found), type);
 						}
 
-						override = ('U' == TYPE(*found));
+						override = ('U' == TYPE(*found) || (oweak && !nweak));
 
 						if (override) {
 							TYPE(*found) = otype;
@@ -2238,7 +2237,7 @@ Sym		*found;
 
 		f = (*found)->exportedBy->obj;
 
-		fprintf(logf,"Main application symbol '%s' found in '");
+		fprintf(logf,"Main application symbol '%s' found in '", mainSym.name);
 		printObjName(logf,f);
 		fprintf(logf,"'; linking...\n");
 

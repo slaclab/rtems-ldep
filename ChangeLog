@@ -1,0 +1,13 @@
+Changes since SSRL_APPS_rtems_4_9_20080922:
+ - weak symbols hopefully work now: when detecting multiple
+   symbol definitions allow new strong definition to override
+   the symbol type introduced by the old weak def.
+   (The xref to the old definition still bears the WEAK flag).
+   No 'type mismatch' warning is emitted if either the old
+   or new definition is weak.
+ - BUGFIX: string argument to log message printing main
+   symbol name (-Aman_sym) was missing.
+ - '-U' option added. Assume all undefined symbols in
+   the application link-set will ultimately be provided by
+   start files, linker script etc.
+ - ChangeLog added
