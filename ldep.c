@@ -1950,12 +1950,12 @@ int pass;
 
 
 static void 
-usage(char *nm)
+usage(const char *nm)
 {
-char *strip = strrchr(nm,'/');
+const char *strip = strrchr(nm,'/');
 	if (strip)
 		nm = strip+1;
-	fprintf(stderr,"\nUsage: %s [-Odfhilmqsu] [-A main_symbol] [-L path] [-o optional_list] [-x exclude_list] [-e script_file] [-C src_file] nm_files\n\n", nm);
+	fprintf(stderr,"\nUsage: %s [-Odfhilmqsuv] [-A main_symbol] [-L path] [-o optional_list] [-x exclude_list] [-e script_file] [-C src_file] nm_files\n\n", nm);
 	fprintf(stderr,"   Object file dependency analysis; the input files must be\n");
 	fprintf(stderr,"   created with 'nm -g -fposix'.\n\n");
 	fprintf(stderr,"(This is ldep $Revision$ by Till Straumann <strauman@slac.stanford.edu>)\n\n");
@@ -1991,6 +1991,7 @@ char *strip = strrchr(nm,'/');
 	fprintf(stderr,"     -f:   be less paranoid when scanning symbols: accept 'local symbols' (map all\n");
 	fprintf(stderr,"           types to upper-case) and assume unrecognized symbol types ('?') are 'U'\n");
 	fprintf(stderr,"     -h:   print this message.\n");
+	fprintf(stderr,"     -v:   print version info.\n");
 	fprintf(stderr,"     -i:   enter interactive mode\n");
 	fprintf(stderr,"     -l:   log info about the linking process\n");
 	fprintf(stderr,"     -m:   check for symbols defined in multiple files\n");
@@ -2100,6 +2101,12 @@ SymRec	sym = {0};
 #define OPT_NO_APPSET		(1<<5)
 #define OPT_SLOPPY_UNLINK	(1<<6)
 
+static const char *prognam(const char *argvnam)
+{
+const char *rval;
+	return (rval=strrchr(argvnam,'/')) ? rval+1 : argvnam;
+}
+
 int
 main(int argc, char **argv)
 {
@@ -2121,13 +2128,18 @@ Sym		*found;
 
 	logf = stdout;
 
-	while ( (ch=getopt(argc, argv, "OC:FL:A:qhifsdmlux:o:e:U")) >= 0 ) {
+	while ( (ch=getopt(argc, argv, "vOC:FL:A:qhifsdmlux:o:e:U")) >= 0 ) {
 		switch (ch) { 
 			default: fprintf(stderr, "Unknown option '%c'\n",ch);
 					 exit(1);
 
 			case 'h':
-				usage(argv[0]);
+				usage(prognam(argv[0]));
+				exit(0);
+
+			case 'v':
+				printf("%s Version $Name$\n",prognam(argv[0]));
+				printf("$Id$\n");
 				exit(0);
 
 

@@ -1,4 +1,5 @@
 Changes since SSRL_APPS_rtems_4_9_20080922:
+ - added -v option to print version info (CVS tag + Id)
  - weak symbols hopefully work now: when detecting multiple
    symbol definitions allow new strong definition to override
    the symbol type introduced by the old weak def.
