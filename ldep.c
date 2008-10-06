@@ -593,6 +593,27 @@ char *po,*pc,*objn;
 
 #define TOUPPER(ch)	(force ? toupper(ch) : (ch)) /* less paranoia when checking symbol types */
 
+#define SIGNIFICANCE_UNDEF 	0
+#define SIGNIFICANCE_WEAK 	1
+#define SIGNIFICANCE_STRNG	2
+
+static int 
+sym_significance(char type)
+{
+	
+	switch (type) {
+		case 'U': case 'w':
+		return SIGNIFICANCE_UNDEF;
+
+		case 'W': case 'V':
+		return SIGNIFICANCE_WEAK;
+
+		default:
+		break;
+	}
+	return SIGNIFICANCE_STRNG;
+}
+
 /* Scan a file generated with 'nm -g -fposix' */
 int
 scan_file(FILE *f, char *name)
@@ -664,6 +685,15 @@ Sym		*found;
 					default: break;
 				}
 
+				/* FIXME: how should we deal with weak undefined symbols?
+				 * some startfiles use weak undefined symbols -- just
+				 * treat as undefined for now...
+				 */
+				if ( 'w' == otype ) {
+					fprintf(stderr,"Warning: Treating weak undefined symbol ('w'): %s as strongly undefined ('U')\n", buf);
+					otype = 'U';
+				}
+
 				type = TOUPPER(otype);
 
 				if ( 'N' == type && !force ) {
@@ -729,10 +759,7 @@ Sym		*found;
 
 						f_type = TOUPPER(TYPE(*found));
 
-						/* for some unknown reason, there seem to be global symbols
-						 * of type 'w' in the compiler startfiles...
-						 */
-						nweak= 'W' == type   || 'V' == type   || 'w' == type;
+						nweak= 'W' == type   || 'V' == type;
 						oweak= 'W' == f_type || 'V' == f_type;
 
 						warn = ( 'U' != TYPE(*found) && 'U' != type && !nweak && !oweak );
@@ -741,7 +768,7 @@ Sym		*found;
 					    	fprintf(stderr,"         %s: known as %c, is now %c\n", (*found)->name, TYPE(*found), type);
 						}
 
-						override = ('U' == TYPE(*found) || (oweak && !nweak));
+						override = sym_significance(type) > sym_significance(f_type);
 
 						if (override) {
 							TYPE(*found) = otype;
@@ -788,10 +815,6 @@ bail:
 					case '?':
 							  if ( !force ) goto bail;
 							  /* else: fall thru / less paranoia */
-
-					case 'w': /* powerpc-rtems-gcc has, for unknown reasons, global symbols
-							   * of this type in its startfiles...
-							   */
 
 					case 'U':
 							  {
