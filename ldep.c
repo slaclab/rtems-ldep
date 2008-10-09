@@ -90,6 +90,13 @@
 #define LINKER_VERSION_SEPARATOR '@'
 #define DUMMY_ALIAS_PREFIX       "__cexp_dummy_alias_"
 
+
+#undef OLD_UNDEFS /* old way of emitting symbol table declarations for
+                     undefined symbols; DEPRECATED -- code #ifdef OLD_UNDEFS
+					 should go away in the next release
+				   */
+#warning 'Remove dead OLD_UNDEFS code'
+
 /* TYPE DECLARATIONS */
 
 /* 'forward' declaration of pointer types */
@@ -158,6 +165,10 @@ typedef struct ProcTabRec_ {
 /* access the symbol 'TYPE' embedded in its name string */
 #define TYPE(sym) (*((sym)->name - 1))
 
+/* undefined symbols */
+#define ISWEAKUNDEF(t) ('w' == (t))
+#define ISUNDEF(t) (('U' == (t)) || 'w' == (t))
+
 #ifdef  TYPE
 #define TYPESZ	1
 #else
@@ -170,12 +181,15 @@ typedef struct ProcTabRec_ {
 #define INLINE
 #endif
 
+#define SYM_FLG_MARK 1
+
 /* struct describing a symbol */
 typedef struct SymRec_ {
 	char	*name;			/* we point 'name' to a string and store the type in 'name[-1]' */
 	int		size;			/* size of object associated with symbol */
 	Xref	exportedBy;		/* linked list of cross-references to objects exporting this symbol */
 	Xref	importedFrom;	/* anchor of a linked list of cross-references to objects importing this symbol */
+	int     flags;
 } SymRec;
 
 /* struct describing a symbol 'reference', i.e. a 'connection' between a symbol and an object file */
@@ -215,27 +229,40 @@ static INLINE void xref_set_weak(Xref e, int weak)
 		e->multiuse &= ~XREF_FLG_WEAK;
 }
 
-/* Find the strongest definition/export of symbol 's'.
- * E.g., if object 'o' has a weak symbol 's'
- * and object 'q' has a strong symbols 's'
- * then strongestExport(s) returns o.
- *
- * This routine assumes that there can be multiple weak
- * definitions but only ONE strong definition.
+/* find the strongest reference to a symbol 's'.
+ * e.g., if object 'o' has a weak reference to 's'
+ * and object 'q' has a strong reference to 's'
+ * then strongestXref(s) returns 'q'.
  */
-static INLINE Xref strongestExport(Sym s)
+static INLINE Xref strongestXref(Xref max)
 {
-Xref r,max = 0;
+Xref r;
 
-	if ( (max = s->exportedBy) ) {
+	if ( max ) {
 		for ( r=XREF_NEXT(max); r; r=XREF_NEXT(r) ) {
 			if ( !XREF_WEAK(r) ) {
 				/* this definition is not weak */
 				max = r;
+				break;
 			}
 		}
 	}
 	return max;
+}
+
+/* Find the strongest definition/export of symbol 's'.
+ *
+ * This routine assumes that there can be multiple weak
+ * definitions but only one strong definition.
+ */
+static INLINE Xref strongestExport(Sym s)
+{
+	return strongestXref(s->exportedBy);
+}
+
+static INLINE Xref strongestImport(Sym s)
+{
+	return strongestXref(s->importedFrom);
 }
 
 static INLINE int symIsUndef(Sym s)
@@ -591,18 +618,22 @@ char *po,*pc,*objn;
 }
 
 
-#define TOUPPER(ch)	(force ? toupper(ch) : (ch)) /* less paranoia when checking symbol types */
+#define TOUPPER(ch)	(force && ! ISWEAKUNDEF(ch) ? toupper(ch) : (ch)) /* less paranoia when checking symbol types but never change weak undefineds */
 
-#define SIGNIFICANCE_UNDEF 	0
-#define SIGNIFICANCE_WEAK 	1
-#define SIGNIFICANCE_STRNG	2
+#define SIGNIFICANCE_WEAK_UNDEF 0
+#define SIGNIFICANCE_UNDEF		1
+#define SIGNIFICANCE_WEAK		2
+#define SIGNIFICANCE_STRNG		3
 
 static int 
 sym_significance(char type)
 {
 	
 	switch (type) {
-		case 'U': case 'w':
+		case 'w':
+		return SIGNIFICANCE_WEAK_UNDEF;
+
+		case 'U':
 		return SIGNIFICANCE_UNDEF;
 
 		case 'W': case 'V':
@@ -685,15 +716,6 @@ Sym		*found;
 					default: break;
 				}
 
-				/* FIXME: how should we deal with weak undefined symbols?
-				 * some startfiles use weak undefined symbols -- just
-				 * treat as undefined for now...
-				 */
-				if ( 'w' == otype ) {
-					fprintf(stderr,"Warning: Treating weak undefined symbol ('w'): %s as strongly undefined ('U')\n", buf);
-					otype = 'U';
-				}
-
 				type = TOUPPER(otype);
 
 				if ( 'N' == type && !force ) {
@@ -728,7 +750,7 @@ Sym		*found;
 
 				nsym->name = buf;
 
-				if ( -1==size && 'U' != type ) {
+				if ( -1==size && ! ISUNDEF(type) ) {
 					fprintf(stderr,"Warning: '%s' (type '%c') has unknown size; setting to zero\n",
 							nsym->name, type);
 					size = 0;
@@ -762,7 +784,7 @@ Sym		*found;
 						nweak= 'W' == type   || 'V' == type;
 						oweak= 'W' == f_type || 'V' == f_type;
 
-						warn = ( 'U' != TYPE(*found) && 'U' != type && !nweak && !oweak );
+						warn = ( ! ISUNDEF(TYPE(*found)) && ! ISUNDEF(type) && !nweak && !oweak );
 				 		if (warn) {
 							fprintf(stderr,"Warning: type mismatch between multiply defined symbols\n");
 					    	fprintf(stderr,"         %s: known as %c, is now %c\n", (*found)->name, TYPE(*found), type);
@@ -771,8 +793,11 @@ Sym		*found;
 						override = sym_significance(type) > sym_significance(f_type);
 
 						if (override) {
+							if ( !( ISWEAKUNDEF(otype) || -1 != size) )  {
+							printf("Type (found) %c, type (new) %c\n", TYPE(*found), otype);
+							};
+							assert( ISWEAKUNDEF(TYPE(*found)) || -1 != ((*found)->size = size) );
 							TYPE(*found) = otype;
-							assert( -1 != ((*found)->size = size) );
 						}
 					}
 #endif
@@ -781,7 +806,7 @@ Sym		*found;
 
 				weak = 0;
 
-				switch ( TOUPPER(type) ) {
+				switch ( type ) {
 bail:
 					default:
 						fprintf(stderr,"Unknown symbol type '%c' (line %i)\n",type,line);
@@ -816,6 +841,8 @@ bail:
 							  if ( !force ) goto bail;
 							  /* else: fall thru / less paranoia */
 
+					case 'w':
+							  weak = 1;
 					case 'U':
 							  {
 							  Xref im;
@@ -826,7 +853,7 @@ bail:
 							  im = &obj->imports[obj->nimports - 1];
 							  im->sym = sym;
 							  im->obj = obj;
-							  xref_set_weak(im,0);
+							  xref_set_weak(im,weak);
 							  xref_set_next(im,0);
 							  }
 					break;
@@ -855,10 +882,26 @@ const Sym sym = *(const Sym*)pnode;
 		ex = &undefSymPod.exports[undefSymPod.nexports-1];
 		ex->sym  = sym;
 		ex->obj  = &undefSymPod;
-		xref_set_weak(ex,0);
+		xref_set_weak(ex, ISWEAKUNDEF(TYPE(ex->sym)));
 		xref_set_next(ex,0);
 	}
 }
+
+#ifdef OLD_UNDEFS
+static void
+symUnmarkAct(const void *pnode, const VISIT when, const int depth)
+{
+	if ( postorder == when || leaf == when ) {
+		(*(Sym*)pnode)->flags &= ~SYM_FLG_MARK;
+	}
+}
+
+static void
+symTblUnmark()
+{
+	twalk(&symTbl, symUnmarkAct);
+}
+#endif
 
 
 /*
@@ -1167,6 +1210,13 @@ Xref	ex,p,n;
 ObjF	q = &undefSymPod;
 
 	for (i=0, ex=q->exports; i<q->nexports; i++,ex++) {
+		/* Ignore weak undefs */
+		if ( ISWEAKUNDEF(TYPE(ex->sym)) ) {
+			if ( verbose & DEBUG_UNLINK ) {
+				fprintf(logf,"skipping weak undef symbol '%s'...\n", ex->sym->name);
+			}
+			continue;
+		}
 		if ( verbose & DEBUG_UNLINK )
 			fprintf(logf,"removing objects depending on '%s'...", ex->sym->name);
 		for ( p = ex->sym->importedFrom; p; p=XREF_NEXT(p) ) {
@@ -1490,36 +1540,39 @@ int		rval = 0;
 			continue;
 
 		for ( i = 0; i < f->nexports; i++ ) {
-			r = f->exports[i].sym->exportedBy;
+			int isCommon = 0;
+			int nStrong;
 
-
-			if (XREF_NEXT(r)) {
-				int isCommon = 0;
 #ifdef TYPE
-				isCommon = 'C' == TOUPPER(TYPE(f->exports[i].sym));
+			isCommon = 'C' == TOUPPER(TYPE(f->exports[i].sym));
 #endif
 
-				if ( !isCommon) {
-					rval++;
-					fprintf(logf,"WARNING: Name Clash Detected; symbol '%s'"
+			for ( nStrong=0, r = f->exports[i].sym->exportedBy; r; r=XREF_NEXT(r) ) {
+				r->obj->work = BUSY;
+				if ( !XREF_WEAK(r) )
+					nStrong++;
+			}
+
+
+			if ( !isCommon && nStrong > 1) {
+				rval++;
+				fprintf(logf,"WARNING: Name Clash Detected; symbol '%s'"
 #ifdef TYPE
-					   " (type '%c')"
+				   " (type '%c')"
 #endif
-					   " exported by multiple objects:\n",
-						f->exports[i].sym->name
+				   " exported by multiple objects:\n",
+					f->exports[i].sym->name
 #ifdef TYPE
-						, TYPE(f->exports[i].sym)
+					, TYPE(f->exports[i].sym)
 #endif
-					);
-				}
-				while (r) {
-					if (!isCommon) {
+				);
+
+				for ( r = f->exports[i].sym->exportedBy; r; r=XREF_NEXT(r) ) {
+					if ( ! XREF_WEAK(r) ) {
 						fprintf(logf,"  in '");
 						printObjName(logf,r->obj);
-						fprintf(logf,"'%s\n", XREF_WEAK(r) ? " (WEAK [not implemented yet])" : "");
+						fputc('\n',logf);
 					}
-					r->obj->work = BUSY;
-					r = XREF_NEXT(r);
 				}
 			}
 		}
@@ -1838,10 +1891,14 @@ static void
 writeSymdecl(FILE *feil, Sym sym, char *title, int *pi)
 {
 char *stripped;
-	getsname(sym, &stripped);
-	fprintf(feil,"extern int "DUMMY_ALIAS_PREFIX"%s%i;\n",title,*pi);
-	fprintf(feil,"asm(\".set "DUMMY_ALIAS_PREFIX"%s%i,%s\\n\");\n",title,*pi,stripped);
-	free(stripped);
+
+	/* Don't emit a declaration for weak undefined symbols */
+	if ( ! ISWEAKUNDEF(TYPE(sym)) ) {
+		getsname(sym, &stripped);
+		fprintf(feil,"extern int "DUMMY_ALIAS_PREFIX"%s%i;\n",title,*pi);
+		fprintf(feil,"asm(\".set "DUMMY_ALIAS_PREFIX"%s%i,%s\\n\");\n",title,*pi,stripped);
+		free(stripped);
+	}
 	(*pi)++;
 }
 
@@ -1850,17 +1907,23 @@ writeSymdef(FILE *feil, Sym sym, char *title, int *pi)
 {
 const char *sname = getsname(sym,0);
 char t            = TYPE(sym);
-char ut           = toupper(t);
+char ut           = ISWEAKUNDEF(t) ? t : toupper(t);
 
 	fprintf(feil,"\t{\n");
 	fprintf(feil,"\t\t.name        = \"%s\",\n", sname);
-	fprintf(feil,"\t\t.value.ptv   =(void*)&"DUMMY_ALIAS_PREFIX"%s%i,\n",title,*pi);
-	fprintf(feil,"\t\t.value.type  =%s,\n",      'T'==t ? "TFuncP" : "TVoid");
-	fprintf(feil,"\t\t.size        =%i,\n",      sym->size);
+	if ( !ISWEAKUNDEF(t) ) {
+		fprintf(feil,"\t\t.value.ptv   =(void*)&"DUMMY_ALIAS_PREFIX"%s%i,\n",title,*pi);
+		fprintf(feil,"\t\t.value.type  =%s,\n",      'T'==t ? "TFuncP" : "TVoid");
+		fprintf(feil,"\t\t.size        =%i,\n",      sym->size);
+	} else {
+		fprintf(feil,"\t\t.value.ptv   =(void*)0,\n");
+		fprintf(feil,"\t\t.value.type  =TVoidP,  \n");
+		fprintf(feil,"\t\t.size        =0,       \n");
+	}
 	fprintf(feil,"\t\t.flags       =0");
-	if ( isupper(t) )
+	if ( isupper(t) || ISWEAKUNDEF(t) )
 		fprintf(feil,"|CEXP_SYMFLG_GLBL");
-	if ( ( 'W' == ut || 'V' == ut ) &&
+	if ( ( 'W' == ut || 'V' == ut || ISWEAKUNDEF(ut) ) &&
 			strcmp("cexpSystemSymbols",sname) )
 		fprintf(feil,"|CEXP_SYMFLG_WEAK");
 	fprintf(feil,",\n");
@@ -1890,6 +1953,10 @@ int     doHeader;
 	if (title)
 		fprintf(feil,"/* ----- %s Link Set ----- */\n\n", title);
 
+#ifdef OLD_UNDEFS
+	symTblUnmark();
+#endif
+
 if ( 0 == pass ) {
 	for ( i=0 ; f; f = f->link.next ) {
 		doHeader = 1;
@@ -1900,18 +1967,22 @@ if ( 0 == pass ) {
 				continue;
 			writeSymdecl(feil, sym, title, &i);
 		}
+#ifdef OLD_UNDEFS
 		if ( genUndefs ) {
 			for ( n = 0; n < f->nimports; n++ ) {
 				sym = f->imports[n].sym;
-				if ( symIsUndef(sym) ) {
+				if ( symIsUndef(sym) && ! (sym->flags & SYM_FLG_MARK) ) {
 					if ( doHeader ) {
-						fprintf(feil,"/* UNDEFINED (hopefully supplied by linker/startfiles); from */\n");
+						fprintf(feil,"/* UNDEFINED (hopefully supplied by linker/startfiles); */\n");
 						doHeader = 0;
 					}
 					writeSymdecl(feil, sym, title, &i);
+					/* mark so we only emit a */ 
+					sym->flags |= SYM_FLG_MARKED;
 				}
 			}
 		}
+#endif
 	}
 } else {
 	for ( i=0 ; f; f = f->link.next ) {
@@ -1923,18 +1994,20 @@ if ( 0 == pass ) {
 				continue;
 			writeSymdef(feil, sym, title, &i);
 		}
+#ifdef OLD_UNDEFS
 		if ( genUndefs ) {
 			for ( n = 0; n < f->nimports; n++ ) {
 				sym = f->imports[n].sym;
 				if ( symIsUndef(sym) ) {
 					if ( doHeader ) {
-						fprintf(feil,"/* UNDEFINED (hopefully supplied by linker/startfiles); from */\n");
+						fprintf(feil,"/* UNDEFINED (hopefully supplied by linker/startfiles); */\n");
 						doHeader = 0;
 					}
 					writeSymdef(feil, sym, title, &i);
 				}
 			}
 		}
+#endif
 	}
 }
 	return 0;
@@ -1960,6 +2033,10 @@ int pass;
 		}
 
 		writeSymdefs(feil, &optionalLinkSet, "Optional", pass, 0);
+
+		if ( emitUndefs ) {
+			writeSymdefs(feil, &undefLinkSet, "UNDEFINED", pass, 0);
+		}
 		if ( 1 == pass ) {
 			fprintf(feil,"\t{\n");
 			fprintf(feil,"\t0, /* terminating record */\n");
