@@ -1,4 +1,10 @@
 Changes since ldep_1_0_beta:
+ - detect and reject multiple strong definitions.
+ - encode symbol type in reference rather than symbol itself
+ - encode symbol size in reference rather than symbol itself
+ - removed 'multiuse' from XrefRec. Now holds explicit 'next',
+   'size', 'xtype' fields.
+ - introduced macros to test symbol type
 Changes since SSRL_APPS_rtems_4_9_20080922:
  - detection of multiply defined symbols accepts multiple weak definitions;
    only complains when multiple strong definitions are encountered.
