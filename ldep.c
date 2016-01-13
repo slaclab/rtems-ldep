@@ -1828,7 +1828,7 @@ fprintf(debugf,"Scanned '%s'\n",buf); continue;
 				printObjName(stderr,pobj[i]);
 				fputc('\n',stderr);
 			}
-			fprintf(stderr,"please be more specific!\n",buf);
+			fprintf(stderr,"please be more specific!\n");
 		} else  {
 			if ( pt->linkNotUnlink ) {
 				if ( 0 == (*pobj)->redefs && 0 == (*pobj)->link.anchor ) {
