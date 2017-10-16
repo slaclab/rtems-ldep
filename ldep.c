@@ -23,6 +23,8 @@
  * together and construct dependency information.
  */
 
+#define TSILL
+
 /*
  * Copyright 2003, Stanford University and
  * 		Till Straumann <strauman@@slac.stanford.edu>
@@ -83,7 +85,7 @@
 #define DEBUG_UNLINK	(1<<4)
 #define DEBUG_COMMENT	(1<<5)
 
-#undef	DEBUG
+#undef DEBUG
 
 #define NWORK
 
@@ -429,9 +431,15 @@ FILE *
 ffind(char *fnam)
 {
 FILE *rval = 0;
-char *buf  = malloc(strlen(fnam) + maxPathLen + 2);
+char *buf  = 0;
 int  i;
 
+	if ( fnam[0] == '/' ) {
+		/* absolute path */
+		return fopen(fnam, "r");
+	}
+
+	buf  = malloc(strlen(fnam) + maxPathLen + 2);
 	for (i=0; i<numSearchPaths && !rval; i++) {
 		sprintf(buf,"%s/%s",searchPaths[i],fnam);
 		rval = fopen(buf,"r");
@@ -494,8 +502,8 @@ Lib	rval;
 }
 
 /* Add an object file to a library */
-void
-libAddObj(char *libname, ObjF obj)
+ObjF
+libAddObj(char *libname, char *objname, ObjF obj)
 {
 Lib l;
 int i;
@@ -507,15 +515,25 @@ int i;
 		/* must create a new library */
 		l = createLib(libname);
 	}
-	/* sanity check */
+	/* seems that a single object file can occur multiple times in a library
+	 * (libbsd.a / arm-rtems4.12)
+	 */
 	for ( i=0; i<l->nfiles; i++) {
-		assert( strcmp(l->files[i]->name, obj->name) );
+		if ( 0 == strcmp(l->files[i]->name, objname) ) {
+			fprintf(stderr,"WARNING: multiple occurrences of '%s' in lib '%s'\n", objname, libname);
+#ifndef TSILL
+exit(1);
+#endif
+			return l->files[i];
+		}
 	}
 	i = l->nfiles+1;
 	assert( l->files = realloc(l->files, i * sizeof(*l->files)) );
+
 	l->files[l->nfiles] = obj;
 	l->nfiles = i;
 	obj->lib  = l;
+	return obj;
 }
 
 /*
@@ -576,7 +594,7 @@ char *lname = "";
 static ObjF
 createObj(char *name)
 {
-ObjF obj;
+ObjF obj, libobj;
 int  l = strlen(name);
 char *po,*pc,*objn;
 
@@ -588,18 +606,29 @@ char *po,*pc,*objn;
 
 	assert( obj = calloc(1, sizeof(*obj)) );
 
-	/* build/copy name */
-	assert( obj->name = stralloc(strlen(objn) + 1) );
-	strcpy( obj->name, objn );
-
-	/* append to list of objects */
-	fileListTail->next = obj;
-	fileListTail = obj;
-	numFiles++;
+	libobj = obj;
 
 	if (po) {
 		/* part of a library */
-		libAddObj(name, obj);
+		libobj = libAddObj(name, objn, obj);
+	}
+
+	if ( libobj != obj ) {
+		/* this obj already present in library; extend */
+		free( obj );
+		obj = libobj;
+	} else {
+		/* build/copy name */
+		assert( obj->name = stralloc(strlen(objn) + 1) );
+		strcpy( obj->name, objn );
+
+		/* append to list of objects */
+		fileListTail->next = obj;
+		fileListTail = obj;
+		numFiles++;
+	}
+
+	if ( po ) {
 		*po = '[';
 		*pc = ']';
 	}
@@ -722,7 +751,10 @@ Xref    ref;
 					fprintf(stderr,"<FILENAME> in %s/line %i not ':' terminated - did you use 'nm -fposix?'\n", name, line);
 					return -1;
 				}
-				fixupObj(obj);
+
+#ifndef TSILL
+				fixupObj( obj );
+#endif
 
 				/* strip trailing ':' */
 				buf[--len]=0;
@@ -797,6 +829,7 @@ Xref    ref;
 
 #endif
 
+#ifndef TSILL
 #if 0
 #ifdef TYPE
 					if (  type != TOUPPER(TYPE(*found)) ) {
@@ -833,6 +866,7 @@ Xref    ref;
 						}
 					}
 #endif
+#endif
 				}
 				sym = *found;
 
@@ -861,7 +895,13 @@ bail:
 					break;
 
 					case '?':
-							  if ( !force ) goto bail;
+							  if ( !force )
+#ifdef TSILL
+								continue
+#else
+								goto bail
+#endif
+							    ;
 							  /* else:  less paranoia */
 							  add_import(obj, sym, otype);
 					break;
@@ -882,7 +922,9 @@ bail:
 			break;
 		}
 	}
-	fixupObj(obj);
+#ifndef TSILL
+	fixupObj( obj );
+#endif
 	free(nsym);
 	return 0;
 }
@@ -1185,9 +1227,6 @@ int		i;
 		return 0;
 	}
 
-	if ( 0 == strcmp(f->name,"dummy.o") )
-		printf("TSILL\n");
-
 	depwalk(f, 0, 0, WALK_EXPORTS | WALK_BUILD_LIST);
 
 	/* check if any of the objects is part of the
@@ -1275,6 +1314,30 @@ ObjF	q = &undefSymPod;
 		continue;
 	}
 	return 0;
+}
+
+int
+unlinkMultdefs()
+{
+ObjF f;
+
+retry:
+	for ( f = fileListFirst() ; f; f = f->next ) {
+		if ( ! f->link.anchor ) {
+			/* currently not linked */
+			f->redefs = 0;
+		} else if ( f->redefs ) {
+			ObjF rejected;
+			fprintf(logf,"%s defines symbol(s) colliding with other (strong) definitions by other objects in same library; unlinking...\n", f->name);
+			if ( ! (rejected = unlinkObj( f, 0 )) ) {
+				/* file list may have changed; must start from head again */
+				goto retry;
+			} else {
+				fprintf(logf, "Unlinking rejected because %s could not be removed\n", rejected->name );
+				f->redefs = 0;
+			}
+		}
+	}
 }
 
 static DepWalkAction	depwalkAction   = 0;
@@ -1583,6 +1646,8 @@ int		rval = 0;
 
 
 			if ( !isCommon && nStrong > 1) {
+				Lib firstLib            = NULL;
+				int firstLibHasMultiple = 0;
 				rval++;
 				fprintf(logf,"WARNING: Name Clash Detected; symbol '%s'"
 #ifdef TYPE
@@ -1595,11 +1660,44 @@ int		rval = 0;
 #endif
 				);
 
-				for ( r = f->exports[i].sym->exportedBy; r; r=XREF_NEXT(r) ) {
+				for ( r = f->exports[i].sym->exportedBy; r; r = XREF_NEXT(r) ) {
 					if ( ! XREF_WEAK(r) ) {
+						Lib  l;
+						int  multipleDefsInSameLib = 0;
+						if ( (l = r->obj->lib) ) {
+							Xref r1;
+							Lib  l1;
+							for ( r1 = XREF_NEXT(r); r1; r1 = XREF_NEXT(r1) ) {
+								if ( ! XREF_WEAK(r1) ) {
+									if ( l == r1->obj->lib ) {
+										multipleDefsInSameLib = 1;
+									}
+								}
+							}
+							if ( ! firstLib ) {
+								firstLib            = l;
+								firstLibHasMultiple = multipleDefsInSameLib;
+							} else {
+								for (l1=libListHead; l1 != firstLib; l1=l1->next) {
+									if ( l1 == l ) {
+										firstLib            = l;
+										firstLibHasMultiple = multipleDefsInSameLib;
+										break;
+									}
+								}
+							}
+						}
 						fprintf(logf,"  in '");
 						printObjName(logf,r->obj);
+						if ( multipleDefsInSameLib ) {
+							fprintf(logf," -- multiple definitions in same library: %s", l->name);
+						}
 						fputc('\n',logf);
+					}
+				}
+				if ( firstLibHasMultiple ) {
+					for ( r = f->exports[i].sym->exportedBy; r; r = XREF_NEXT(r) ) {
+						r->obj->redefs++;
 					}
 				}
 			}
@@ -1987,6 +2085,8 @@ int     doHeader;
 
 if ( 0 == pass ) {
 	for ( i=0 ; f; f = f->link.next ) {
+		if ( f->redefs )
+			continue;
 		doHeader = 1;
 		fprintf(feil,"/* "); printObjName(feil,f); fprintf(feil,": */\n");
 		for ( n = 0; n < f->nexports; n++ ) {
@@ -2014,6 +2114,8 @@ if ( 0 == pass ) {
 	}
 } else {
 	for ( i=0 ; f; f = f->link.next ) {
+		if ( f->redefs )
+			continue;
 		doHeader = 1;
 		fprintf(feil,"/* "); printObjName(feil,f); fprintf(feil,": */\n");
 		for ( n = 0; n < f->nexports; n++ ) {
@@ -2347,6 +2449,11 @@ Sym		*found;
 			lastAppObj = fileListTail;
 	} while (++nfile < argc);
 
+#ifdef TSILL
+	for ( f = fileListFirst(); f; f=f->next )
+		fixupObj( f );
+#endif
+
 	gatherDanglingUndefs();
 
 	fileListIndex = fileListBuildIndex();
@@ -2438,8 +2545,16 @@ Sym		*found;
 	}
 
 	fprintf(logf,"Removing undefined symbols\n");
-		unlinkUndefs();
+	unlinkUndefs();
+	unlinkMultdefs();
 
+	for ( f=fileListFirst(); f; f=f->next) {
+		if ( 0 != f->redefs ) {
+			fprintf(stderr,"REDEFS found in %s\n", f->name);
+			assert( 0 == f->redefs );
+			exit(1);
+		}
+	}
 
 	if ( options & OPT_MULTIDEFS ) {
 		checkMultipleDefs(&appLinkSet);
