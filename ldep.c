@@ -1612,106 +1612,6 @@ int  i;
 	return rval;
 }
 
-/* Check for multiply define symbols in the link set of an object */
-int
-checkMultipleDefs(LinkSet s)
-{
-ObjF	f;
-int		i;
-Xref	r;
-int		rval = 0;
-
-	fprintf(logf,
-			"Checking for multiply defined symbols in the %s link set:\n",
-			s->name);
-
-	for ( f = s->set; f; f=f->link.next ) {
-		
-		if ( BUSY == f->work )
-			continue;
-
-		for ( i = 0; i < f->nexports; i++ ) {
-			int isCommon = 0;
-			int nStrong;
-
-#ifdef TYPE
-			isCommon = ISCOMMON(TOUPPER(TYPE(&f->exports[i])));
-#endif
-
-			for ( nStrong=0, r = f->exports[i].sym->exportedBy; r; r=XREF_NEXT(r) ) {
-				r->obj->work = BUSY;
-				if ( !XREF_WEAK(r) )
-					nStrong++;
-			}
-
-
-			if ( !isCommon && nStrong > 1) {
-				Lib firstLib            = NULL;
-				int firstLibHasMultiple = 0;
-				rval++;
-				fprintf(logf,"WARNING: Name Clash Detected; symbol '%s'"
-#ifdef TYPE
-				   " (type '%c')"
-#endif
-				   " exported by multiple objects:\n",
-					f->exports[i].sym->name
-#ifdef TYPE
-					, TYPE(&f->exports[i])
-#endif
-				);
-
-				for ( r = f->exports[i].sym->exportedBy; r; r = XREF_NEXT(r) ) {
-					if ( ! XREF_WEAK(r) ) {
-						Lib  l;
-						int  multipleDefsInSameLib = 0;
-						if ( (l = r->obj->lib) ) {
-							Xref r1;
-							Lib  l1;
-							for ( r1 = XREF_NEXT(r); r1; r1 = XREF_NEXT(r1) ) {
-								if ( ! XREF_WEAK(r1) ) {
-									if ( l == r1->obj->lib ) {
-										multipleDefsInSameLib = 1;
-									}
-								}
-							}
-							if ( ! firstLib ) {
-								firstLib            = l;
-								firstLibHasMultiple = multipleDefsInSameLib;
-							} else {
-								for (l1=libListHead; l1 != firstLib; l1=l1->next) {
-									if ( l1 == l ) {
-										firstLib            = l;
-										firstLibHasMultiple = multipleDefsInSameLib;
-										break;
-									}
-								}
-							}
-						}
-						fprintf(logf,"  in '");
-						printObjName(logf,r->obj);
-						if ( multipleDefsInSameLib ) {
-							fprintf(logf," -- multiple definitions in same library: %s", l->name);
-						}
-						fputc('\n',logf);
-					}
-				}
-				if ( firstLibHasMultiple ) {
-					for ( r = f->exports[i].sym->exportedBy; r; r = XREF_NEXT(r) ) {
-						r->obj->redefs++;
-					}
-				}
-			}
-		}
-	}
-
-	for ( f = fileListHead; f; f=f->next )
-		f->work = 0;
-
-	fprintf(logf,"OK\n");
-
-	return rval;
-}
-
 /*
  * Find an object with 'name' in the index of all objects.
  *
@@ -2224,7 +2124,6 @@ const char *strip = strrchr(nm,'/');
 	fprintf(stderr,"     -v:   print version info.\n");
 	fprintf(stderr,"     -i:   enter interactive mode\n");
 	fprintf(stderr,"     -l:   log info about the linking process\n");
-	fprintf(stderr,"     -m:   check for symbols defined in multiple files\n");
 	fprintf(stderr,"     -q:   quiet; just build database and do basic checks\n");
 	fprintf(stderr,"     -x:   exclude/remove a list of objects from the link - name them, one per line, in\n");
 	fprintf(stderr,"           the file 'exclude_list'\n");
@@ -2327,7 +2226,6 @@ SymRec	sym = {0};
 #define OPT_SHOW_SYMS		(1<<1)
 #define OPT_INTERACTIVE		(1<<2)
 #define OPT_QUIET			(1<<3)
-#define OPT_MULTIDEFS		(1<<4)
 #define OPT_NO_APPSET		(1<<5)
 #define OPT_SLOPPY_UNLINK	(1<<6)
 
@@ -2358,7 +2256,7 @@ Sym		*found;
 
 	logf = stdout;
 
-	while ( (ch=getopt(argc, argv, "vOC:FL:A:qhifsdmlux:o:e:U")) >= 0 ) {
+	while ( (ch=getopt(argc, argv, "vOC:FL:A:qhifsdlux:o:e:U")) >= 0 ) {
 		switch (ch) { 
 			default: fprintf(stderr, "Unknown option '%c'\n",ch);
 					 exit(1);
@@ -2406,8 +2304,6 @@ Sym		*found;
 					  procTab[nProc].fname         = optarg;
 					  procTab[nProc].linkNotUnlink = 0;
 					  nProc++;
-			break;
-			case 'm': options |= OPT_MULTIDEFS;
 			break;
 			case 'e': scrn = optarg;
 			break;
@@ -2554,11 +2450,6 @@ Sym		*found;
 			assert( 0 == f->redefs );
 			exit(1);
 		}
-	}
-
-	if ( options & OPT_MULTIDEFS ) {
-		checkMultipleDefs(&appLinkSet);
-		checkMultipleDefs(&optionalLinkSet);
 	}
 
 	if ( options & OPT_INTERACTIVE ) {
