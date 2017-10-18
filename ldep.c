@@ -219,6 +219,22 @@ static INLINE void xref_set_next(Xref e, Xref next)
 	e->next = next;
 }
    
+/* returns 'true' if xref a is 'stronger' than xref 'b' */
+static int strongerXref(Xref a, Xref b)
+{
+char tb = TYPE( b );
+char ta = TYPE( a );
+	if ( ISUNDEF( tb ) ) {
+		return ! ISUNDEF( ta );
+	}
+	if ( ISWEAK( tb ) ) {
+		return ISSTRONG( ta );
+	}
+	if ( ISCOMMON( tb ) ) {
+		return ISSTRONG( ta ) && ! ISCOMMON( ta );
+	}
+	return 0;
+}
 /* find the strongest reference to a symbol 's'.
  * e.g., if object 'o' has a weak reference to 's'
  * and object 'q' has a strong reference to 's'
@@ -228,10 +244,9 @@ static INLINE Xref strongestXref(Xref max)
 {
 Xref r;
 
-	if ( max && XREF_WEAK(max) ) {
+	if ( max ) {
 		for ( r=XREF_NEXT(max); r; r=XREF_NEXT(r) ) {
-			if ( !XREF_WEAK(r) ) {
-				/* this definition is not weak */
+			if ( strongerXref(r, max) ) {
 				max = r;
 				break;
 			}
@@ -476,11 +491,25 @@ int		i;
 	for (i=0, ex=f->exports; i<f->nexports; i++,ex++) {
 		/* append to list of modules exporting this symbol */
 		sym = ex->sym;
+if ( !strcmp(sym->name,"arc4random") ) {
+	printf("ARC4RAND in %s [%c]\n", f->name, TYPE(ex));
+}
 		if ( sym->exportedBy ) {
-			Xref etmp;
-			for ( etmp = sym->exportedBy; XREF_NEXT(etmp); etmp=XREF_NEXT(etmp) )
-			  	/* nothing else to do */;
-				xref_set_next(etmp, ex);
+			Xref etmp, max;
+			for ( max = etmp = sym->exportedBy; XREF_NEXT(etmp); etmp=XREF_NEXT(etmp) ) {
+				if ( strongerXref( etmp, max ) ) {
+if ( !strcmp(sym->name,"arc4random") ) {
+	printf("ARC4RAND -- found stronger def in %s\n", etmp->obj->name);
+}
+					max = etmp;
+				}
+			}
+			if ( ISSTRONG( TYPE(max)) && ISSTRONG( TYPE(ex) )  ) {
+				if ( !ISCOMMON( TYPE( max ) ) || ! ISCOMMON( TYPE( ex ) ) ) {
+					fprintf(logf, "Redefinition of %s in %s\n", sym->name, f->name);
+				}
+			}
+			xref_set_next(etmp, ex);
 		} else {
 			sym->exportedBy = ex;
 		}
@@ -1009,7 +1038,9 @@ register Xref imp;
 		fprintf(logf," to %s link set\n", f->link.anchor->name);
 	}
 
+#ifndef TSILL
 	assert( 0 == f->redefs );
+#endif
 
 	for (i=0, imp=f->imports; i<f->nimports; i++, imp++) {
 		register Sym *found;
