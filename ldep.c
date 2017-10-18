@@ -130,14 +130,16 @@ typedef struct ObjFRec_ {
 	ObjF		next;		/* linked list of all objects */
 	Lib			lib;		/* libary we're part of or NULL */
 	LinkNodeRec link; 		/* link set we're a member of */
-	ObjF		work;		/* temp pointer to do work */
-#ifndef NWORK
+	Xref		work;		/* temp pointer to do work */
+#ifdef NWORK
+	int         workDepth;
+#else
 	ObjF		work1;
 #endif
 	int			nexports;
 	Xref		exports;	/* symbols exported by this object */
 	int			nimports;
-	Xref		imports;	/* symbols exported by this object */
+	Xref		imports;	/* symbols imported by this object */
 	int         redefs;		/* how many symbols this object illegally redefines */
 } ObjFRec;
 
@@ -149,7 +151,8 @@ typedef struct LibRec_ {
 } LibRec;
 
 
-typedef void (*DepWalkAction)(ObjF f, int depth, void *closure);
+typedef void (*DepWalkAction)   (ObjF f, int depth, void *closure);
+typedef void (*DepWalkActionRef)(Xref f, int depth, void *closure);
 
 typedef struct DepPrintArgRec_ {
 	int		minDepth;
@@ -185,11 +188,11 @@ typedef struct ProcTabRec_ {
 
 /* struct describing a symbol */
 typedef struct SymRec_ {
-	char	*name;			/* we point 'name' to a string and store the type in 'name[-1]' */
-	Xref	exportedBy;		/* linked list of cross-references to objects exporting this symbol */
-	Xref	importedFrom;	/* anchor of a linked list of cross-references to objects importing this symbol */
-	int     flags;
-	int     refcnt;
+	char	 *name;			/* we point 'name' to a string and store the type in 'name[-1]' */
+	Xref	 exportedBy;	/* linked list of cross-references to objects exporting this symbol */
+	Xref	 importedFrom;	/* anchor of a linked list of cross-references to objects importing this symbol */
+	int      flags;
+	int      refcnt;
 } SymRec;
 
 /* struct describing a symbol 'reference', i.e. a 'connection' between a symbol and an object file */
@@ -298,6 +301,7 @@ void depwalk(ObjF f, DepWalkAction action, void *closure, int mode);
 int  checkCircWorkList(ObjF f);
 void depwalkListRelease(ObjF f);
 void workListIterate(ObjF f, DepWalkAction action, void *closure);
+void workListIterateRef(ObjF f, DepWalkActionRef action, void *closure);
 
 /* VARIABLE FORWARD DECLARATIONS */
 extern LinkSetRec appLinkSet;
@@ -988,7 +992,7 @@ gatherDanglingUndefs()
  */
 
 int
-linkObj(ObjF f, char *symname)
+linkObj(ObjF f, char *symname, int l)
 {
 register int i;
 register Xref imp;
@@ -997,6 +1001,8 @@ register Xref imp;
 
 
 	if (verbose & DEBUG_LINK) {
+		for ( i=0; i<l; i++ )
+			fputc(' ', logf);
 		fprintf(logf,"Linking '"); printObjName(debugf,f); fputc('\'', debugf);
 		if (symname)
 			fprintf(logf,"because of '%s'",symname);
@@ -1024,7 +1030,7 @@ register Xref imp;
 			ObjF	dep= strongestExport(*found)->obj;
 			if ( f->link.anchor && !dep->link.anchor ) {
 				dep->link.anchor = f->link.anchor;
-				linkObj(dep,(*found)->name);
+				linkObj(dep,(*found)->name, l+1);
 			}
 		}
 	}
@@ -1249,7 +1255,9 @@ int		i;
 					fprintf(logf," %s",reject->imports[i].sym->name);
 				}
 			}
-			fprintf(logf,")... done.\n");
+			fprintf(logf,").\n");
+			fprintf(logf, "Work list:\n");
+			workListIterateRef(f, priact, reject);
 		}
 	}
 	depwalkListRelease(f);
@@ -1345,7 +1353,7 @@ static void				*depwalkClosure = 0;
 static int				depwalkMode     = 0;
 
 
-#define BUSY 		((ObjF)depwalk) /* just some address */
+#define BUSY 		((Xref)depwalk) /* just some address */
 #define MATCH_ANY	((Lib)depwalk)	/* just some address */
 
 #define DO_EXPORTS (depwalkMode & WALK_EXPORTS)
@@ -1378,8 +1386,9 @@ register Xref ref;
 				/* mark in use */
 #ifdef NWORK
 /*				fprintf(debugf,"Linking %s between %s and %s\n", ref->obj->name, f->name, f->work && f->work != BUSY ? f->work->name : "NIL");    */
-				ref->obj->work = f->work;
-				f->work        = ref->obj;
+				ref->obj->work      = f->work;
+				ref->obj->workDepth = depth + 1;
+				f->work             = ref;
 				assert( 0 == checkCircWorkList(f) );
 #else
 				ref->obj->work = f;
@@ -1391,8 +1400,9 @@ register Xref ref;
 				depwalk_rec(ref->obj, depth+1);
 				if ( ! (depwalkMode & WALK_BUILD_LIST) ) {
 #ifdef NWORK
-					f->work        = ref->obj->work;
-					ref->obj->work = 0;
+					f->work             = ref->obj->work;
+					ref->obj->work      = 0;
+					ref->obj->workDepth = 0;
 #else
 					ref->obj->work = 0;
 #endif
@@ -1439,12 +1449,16 @@ depwalk(ObjF f, DepWalkAction action, void *closure, int mode)
 void
 workListRelease(ObjF f)
 {
-ObjF tmp;
+Xref tmp;
 #ifdef NWORK
-	for (tmp = f; tmp && tmp!= BUSY; ) {
-		tmp     = f->work;
-		f->work = 0;
-		f       = tmp;
+	tmp = f->work;
+	f->work      = 0;
+	f->workDepth = 0;
+	while ( tmp != BUSY ) {
+		f = tmp->obj;
+		tmp = f->work;
+		f->work      = 0;
+		f->workDepth = 0;
 	}
 #else
 	for (tmp = f; tmp; ) {
@@ -1460,18 +1474,31 @@ ObjF tmp;
 void
 workListIterate(ObjF f, DepWalkAction action, void *closure)
 {
-int   depth = 0;
 #ifdef NWORK
-	while ( f && f != BUSY ) { 
-		action(f, depth++, closure);
-		f = f->work;
+	action(f, f->workDepth, closure);
+	while ( BUSY != f->work ) {
+		f = f->work->obj;
+		action(f, f->workDepth, closure);
 	}
 #else
+int   depth = 0;
 	while ( f ) {
 		action(f, depth++, closure);
 		f = f->work1;
 	}
 #endif
+}
+
+void
+workListIterateRef(ObjF f, DepWalkActionRef action, void *closure)
+{
+XrefRec r = {0};
+r.obj = f;
+	action(&r, f->workDepth, closure);
+	while ( BUSY != f->work ) {
+		action(f->work, f->workDepth, closure);
+		f = f->work->obj;
+	}
 }
 
 /* Release the work list of an object and invoke the action
@@ -1529,7 +1556,7 @@ typedef struct {
 static void circCheckAction(ObjF f, int depth, void *closure)
 {
 CheckArg arg  = closure;
-	if (depth > 0 && f == arg->test)
+	if (depth > f->workDepth && f == arg->test)
 		arg->result = -1;
 }
 
@@ -1832,7 +1859,7 @@ fprintf(debugf,"Scanned '%s'\n",buf); continue;
 				if ( 0 == (*pobj)->redefs && 0 == (*pobj)->link.anchor ) {
 					(*pobj)->link.anchor = &optionalLinkSet;
 					sprintf(buf,"<SCRIPT>'%s'",pt->fname);
-					rval -= linkObj( *pobj, buf );
+					rval -= linkObj( *pobj, buf, 0 );
 				}
 			} else if ( unlinkObj(*pobj, 0) ) {
 				char *fmt = "Object '%s' couldn't be removed; probably it's needed by the application\n";
@@ -2387,7 +2414,7 @@ Sym		*found;
 		assert( !f->link.anchor );
 		assert( !f->redefs );
 		f->link.anchor = linkSet;
-		linkObj(f, mainSym.name);
+		linkObj(f, mainSym.name, 0);
 		linkSet = hasOptional ? 0 : &optionalLinkSet;
 
 		/* ignore lastAppObj */
@@ -2396,7 +2423,7 @@ Sym		*found;
 	for ( f=fileListFirst(); f && linkSet; f=f->next) {
 		if ( 0 == f->redefs && !f->link.anchor) {
 			f->link.anchor = linkSet;
-			linkObj(f, 0);
+			linkObj(f, 0, 0);
 		}
 		if ( f==lastAppObj )
 			linkSet = hasOptional ? 0 : &optionalLinkSet;	
