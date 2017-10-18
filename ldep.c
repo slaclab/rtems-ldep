@@ -23,8 +23,6 @@
  * together and construct dependency information.
  */
 
-#define TSILL
-
 /*
  * Copyright 2003, Stanford University and
  * 		Till Straumann <strauman@@slac.stanford.edu>
@@ -554,9 +552,6 @@ int i;
 	for ( i=0; i<l->nfiles; i++) {
 		if ( 0 == strcmp(l->files[i]->name, objname) ) {
 			fprintf(stderr,"WARNING: multiple occurrences of '%s' in lib '%s'\n", objname, libname);
-#ifndef TSILL
-exit(1);
-#endif
 			return l->files[i];
 		}
 	}
@@ -785,10 +780,6 @@ Xref    ref;
 					return -1;
 				}
 
-#ifndef TSILL
-				fixupObj( obj );
-#endif
-
 				/* strip trailing ':' */
 				buf[--len]=0;
 
@@ -861,45 +852,6 @@ Xref    ref;
 					fprintf(debugf,"Found existing symbol %s (found %p, sym %p)\n",(*found)->name, found, *found);
 
 #endif
-
-#ifndef TSILL
-#if 0
-#ifdef TYPE
-					if (  type != TOUPPER(TYPE(*found)) ) {
-						int warn, override, nweak, oweak, f_type;
-
-						f_type = TOUPPER(TYPE(*found));
-
-						nweak= 'W' == type   || 'V' == type;
-						oweak= 'W' == f_type || 'V' == f_type;
-
-						warn = ( ! ISUNDEF(TYPE(*found)) && ! ISUNDEF(type) && !nweak && !oweak );
-				 		if (warn) {
-							fprintf(stderr,"Warning: type mismatch between multiply defined symbols\n");
-					    	fprintf(stderr,"         %s: known as %c, is now %c\n", (*found)->name, TYPE(*found), type);
-						}
-
-						override = sym_significance(type) > sym_significance(f_type);
-
-						if (override) {
-							if ( !( ISWEAKUNDEF(otype) || -1 != size) )  {
-							printf("Type (found) %c, type (new) %c\n", TYPE(*found), otype);
-							};
-							assert( ISWEAKUNDEF(TYPE(*found)) || -1 != ((*found)->size = size) );
-							TYPE(*found) = otype;
-						}
-					}
-#endif
-#else
-					if ( ISSTRONG( type ) && (ref = strongestExport(*found)) && ISSTRONG(TYPE(ref)) ) {
-						/* Check for multiple strong definitions */
-						if ( ! ISCOMMON(type) || ! ISCOMMON(TOUPPER(TYPE(ref))) ) {
-							fprintf(logf,"Strong definition for symbol %s already exists in %s\n",(*found)->name, ref->obj->name);
-							obj->redefs++;
-						}
-					}
-#endif
-#endif
 				}
 				sym = *found;
 
@@ -929,11 +881,7 @@ bail:
 
 					case '?':
 							  if ( !force )
-#ifdef TSILL
 								continue
-#else
-								goto bail
-#endif
 							    ;
 							  /* else:  less paranoia */
 							  add_import(obj, sym, otype);
@@ -955,9 +903,6 @@ bail:
 			break;
 		}
 	}
-#ifndef TSILL
-	fixupObj( obj );
-#endif
 	free(nsym);
 	return 0;
 }
@@ -1037,10 +982,6 @@ register Xref imp;
 			fprintf(logf,"because of '%s'",symname);
 		fprintf(logf," to %s link set\n", f->link.anchor->name);
 	}
-
-#ifndef TSILL
-	assert( 0 == f->redefs );
-#endif
 
 	for (i=0, imp=f->imports; i<f->nimports; i++, imp++) {
 		register Sym *found;
@@ -2471,10 +2412,8 @@ Sym		*found;
 			lastAppObj = fileListTail;
 	} while (++nfile < argc);
 
-#ifdef TSILL
 	for ( f = fileListFirst(); f; f=f->next )
 		fixupObj( f );
-#endif
 
 	gatherDanglingUndefs();
 
