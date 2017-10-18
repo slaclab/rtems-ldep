@@ -1232,8 +1232,12 @@ checkSanity(ObjF f, int depth, void *closure)
 {
 Xref	ex;
 int		i;
-	/* sanity check. All exported symbols' import lists must be empty */
+	/* sanity check. All exported symbols' import lists must be empty
+	 * -- unless the strongest export is by another object
+	 */
 	for (i=0, ex=f->exports; i<f->nexports; i++,ex++) {
+		if ( strongestExport( ex->sym )->obj != f )
+			continue;
 		assert( ex->sym->importedFrom == 0 );
 	}
 }
