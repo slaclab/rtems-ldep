@@ -1253,6 +1253,14 @@ int		i;
  * RETURNS: 0 on success, NONZERO on failure (i.e. members
  *          of the Application link set depend on 'f').
  */
+static void priact(Xref r, int depth, void *closure)
+{
+int  i;
+ObjF f = r->obj;
+	for ( i=0; i<depth; i++ )
+		fputc(' ', logf);
+	fprintf(logf, "%s%s (because of '%s')\n", f->name, (void*)f == closure ? " (***)": "", r->sym ? r->sym->name : "");
+}
 
 ObjF
 unlinkObj(ObjF f, int checkOnly)
@@ -1359,19 +1367,63 @@ ObjF	q = &undefSymPod;
 	return 0;
 }
 
+Xref
+objHasRedef(ObjF f)
+{
+int i;
+Xref ex, r;
+
+	/* If we export a definition of a symbol that is
+	 * also defined by an object in the same library
+	 * but which is not linked then this object
+	 * must not be linked (because a reference to
+	 * our export would be resolved by the upstream
+	 * object!
+	 */
+	for (i=0, ex=f->exports; i<f->nexports; i++,ex++) {
+		char t = TYPE(ex);
+
+		if ( ISUNDEF( t ) )
+			continue;
+
+		if ( ! f->lib ) {
+			/* Not part of a library; in this case we must not redefine */
+			for ( r = ex->sym->exportedBy; r->obj != f; r = XREF_NEXT(r) ) {
+				if ( ISSTRONG( TYPE(ex) ) && ISSTRONG( TYPE( r ) ) && !ISCOMMON( t ) && !ISCOMMON( TYPE(r) ) )
+					return r;
+			}
+		} else {
+			for ( r = ex->sym->exportedBy; r->obj != f; r = XREF_NEXT(r) ) {
+				if ( r->obj->lib == f->lib ) {
+					if ( ! r->obj->link.anchor ) {
+						if ( ! strongerXref( ex, r ) && ISSTRONG( TYPE(ex) ) )
+							return r;
+					} else {
+						if ( ! strongerXref( r, ex ) && ISSTRONG( TYPE(r) ) )
+							return r;
+					}
+				}
+			}
+		}
+	}
+	return 0;
+}
+
 int
 unlinkMultdefs()
 {
 ObjF f;
+Xref coll;
 
 retry:
 	for ( f = fileListFirst() ; f; f = f->next ) {
 		if ( ! f->link.anchor ) {
 			/* currently not linked */
 			f->redefs = 0;
-		} else if ( f->redefs ) {
+		} else if ( (coll = objHasRedef( f )) ) {
 			ObjF rejected;
 			fprintf(logf,"%s defines symbol(s) colliding with other (strong) definitions by other objects in same library; unlinking...\n", f->name);
+			fprintf(logf,"Colliding symbol was %s (from %s)\n", coll->sym->name, coll->obj->name);
 			if ( ! (rejected = unlinkObj( f, 0 )) ) {
 				/* file list may have changed; must start from head again */
 				goto retry;
@@ -2524,6 +2576,19 @@ Sym		*found;
 
 	fprintf(logf,"Removing undefined symbols\n");
 	unlinkUndefs();
+{
+SymRec s;
+	s.name = "_bsd_handlers";
+Sym  *pf = (Sym*) tfind( &s, &symTbl, symcmp );
+Xref r;
+	printf("BSD_HANDLERS exported by\n");
+	for ( r = (*pf)->exportedBy; r; r = XREF_NEXT(r) ) {
+		printf(" ** %s\n", r->obj->name);
+	}
+	
+}
+
+	fprintf(logf,"Removing multiply defined symbols\n");
 	unlinkMultdefs();
 
 	for ( f=fileListFirst(); f; f=f->next) {
