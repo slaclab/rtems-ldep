@@ -1459,6 +1459,10 @@ register Xref ref;
 		depwalkAction(f,depth,depwalkClosure);
 
 	for ( i=0; i < (DO_EXPORTS ? f->nexports : f->nimports); i++ ) {
+		if ( DO_EXPORTS && strongestExport( f->exports[i].sym )->obj != f ) {
+			/* Another module already exports this */
+			continue;
+		}
 		for (ref = (DO_EXPORTS ? f->exports[i].sym->importedFrom : strongestExport(f->imports[i].sym));
 			 ref;
 			 ref = (DO_EXPORTS ? XREF_NEXT(ref) : 0 /* use only the first definition */) ) {
