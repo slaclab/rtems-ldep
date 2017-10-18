@@ -483,16 +483,10 @@ int		i;
 	for (i=0, ex=f->exports; i<f->nexports; i++,ex++) {
 		/* append to list of modules exporting this symbol */
 		sym = ex->sym;
-if ( !strcmp(sym->name,"arc4random") ) {
-	printf("ARC4RAND in %s [%c]\n", f->name, TYPE(ex));
-}
 		if ( sym->exportedBy ) {
 			Xref etmp, max;
 			for ( max = etmp = sym->exportedBy; XREF_NEXT(etmp); etmp=XREF_NEXT(etmp) ) {
 				if ( strongerXref( etmp, max ) ) {
-if ( !strcmp(sym->name,"arc4random") ) {
-	printf("ARC4RAND -- found stronger def in %s\n", etmp->obj->name);
-}
 					max = etmp;
 				}
 			}
@@ -2506,17 +2500,6 @@ Sym		*found;
 
 	fprintf(logf,"Removing undefined symbols\n");
 	unlinkUndefs();
-{
-SymRec s;
-	s.name = "_bsd_handlers";
-Sym  *pf = (Sym*) tfind( &s, &symTbl, symcmp );
-Xref r;
-	printf("BSD_HANDLERS exported by\n");
-	for ( r = (*pf)->exportedBy; r; r = XREF_NEXT(r) ) {
-		printf(" ** %s\n", r->obj->name);
-	}
-	
-}
 
 	fprintf(logf,"Removing multiply defined symbols\n");
 	unlinkMultdefs();
