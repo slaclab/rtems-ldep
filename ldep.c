@@ -138,7 +138,6 @@ typedef struct ObjFRec_ {
 	Xref		exports;	/* symbols exported by this object */
 	int			nimports;
 	Xref		imports;	/* symbols imported by this object */
-	int         redefs;		/* how many symbols this object illegally redefines */
 } ObjFRec;
 
 typedef struct LibRec_ {
@@ -480,11 +479,6 @@ int		i;
 		return;
 
 	/* fixup export list; we can do this only after all reallocs have been performed */
-
-	if ( f->redefs ) {
-		fprintf(logf,"Cannot use object %s -- contains conflicting strong definitions\n", f->name);
-		return;
-	}
 
 	for (i=0, ex=f->exports; i<f->nexports; i++,ex++) {
 		/* append to list of modules exporting this symbol */
@@ -1360,7 +1354,6 @@ retry:
 	for ( f = fileListFirst() ; f; f = f->next ) {
 		if ( ! f->link.anchor ) {
 			/* currently not linked */
-			f->redefs = 0;
 		} else if ( (coll = objHasRedef( f )) ) {
 			ObjF rejected;
 			fprintf(logf,"%s defines symbol(s) colliding with other (strong) definitions by other objects in same library; unlinking...\n", f->name);
@@ -1370,7 +1363,6 @@ retry:
 				goto retry;
 			} else {
 				fprintf(logf, "Unlinking rejected because %s could not be removed\n", rejected->name );
-				f->redefs = 0;
 			}
 		}
 	}
@@ -1888,7 +1880,7 @@ fprintf(debugf,"Scanned '%s'\n",buf); continue;
 			fprintf(stderr,"please be more specific!\n");
 		} else  {
 			if ( pt->linkNotUnlink ) {
-				if ( 0 == (*pobj)->redefs && 0 == (*pobj)->link.anchor ) {
+				if ( 0 == (*pobj)->link.anchor ) {
 					(*pobj)->link.anchor = &optionalLinkSet;
 					sprintf(buf,"<SCRIPT>'%s'",pt->fname);
 					rval -= linkObj( *pobj, buf, 0 );
@@ -2044,8 +2036,6 @@ int     doHeader;
 
 if ( 0 == pass ) {
 	for ( i=0 ; f; f = f->link.next ) {
-		if ( f->redefs )
-			continue;
 		doHeader = 1;
 		fprintf(feil,"/* "); printObjName(feil,f); fprintf(feil,": */\n");
 		for ( n = 0; n < f->nexports; n++ ) {
@@ -2073,8 +2063,6 @@ if ( 0 == pass ) {
 	}
 } else {
 	for ( i=0 ; f; f = f->link.next ) {
-		if ( f->redefs )
-			continue;
 		doHeader = 1;
 		fprintf(feil,"/* "); printObjName(feil,f); fprintf(feil,": */\n");
 		for ( n = 0; n < f->nexports; n++ ) {
@@ -2450,7 +2438,6 @@ Sym		*found;
 		fprintf(logf,"'; linking...\n");
 
 		assert( !f->link.anchor );
-		assert( !f->redefs );
 		f->link.anchor = linkSet;
 		linkObj(f, mainSym.name, 0);
 		linkSet = hasOptional ? 0 : &optionalLinkSet;
@@ -2459,7 +2446,7 @@ Sym		*found;
 	}
 
 	for ( f=fileListFirst(); f && linkSet; f=f->next) {
-		if ( 0 == f->redefs && !f->link.anchor) {
+		if ( !f->link.anchor) {
 			f->link.anchor = linkSet;
 			linkObj(f, 0, 0);
 		}
@@ -2533,14 +2520,6 @@ Xref r;
 
 	fprintf(logf,"Removing multiply defined symbols\n");
 	unlinkMultdefs();
-
-	for ( f=fileListFirst(); f; f=f->next) {
-		if ( 0 != f->redefs ) {
-			fprintf(stderr,"REDEFS found in %s\n", f->name);
-			assert( 0 == f->redefs );
-			exit(1);
-		}
-	}
 
 	if ( options & OPT_INTERACTIVE ) {
 		interactive(stderr);
