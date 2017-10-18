@@ -2152,6 +2152,7 @@ const char *strip = strrchr(nm,'/');
 	fprintf(stderr,"     -i:   enter interactive mode\n");
 	fprintf(stderr,"     -l:   log info about the linking process\n");
 	fprintf(stderr,"     -q:   quiet; just build database and do basic checks\n");
+	fprintf(stderr,"  -t <sym> trace symbol 'sym' and log info (may use multiple times)\n");
 	fprintf(stderr,"     -x:   exclude/remove a list of objects from the link - name them, one per line, in\n");
 	fprintf(stderr,"           the file 'exclude_list'\n");
 	fprintf(stderr,"           NOTES: - if a mandatory object depends on an object to be removed, removal\n");
@@ -2276,6 +2277,8 @@ int		nProc         = 0;
 char	*mainName     = 0;
 int		options       = 0;
 int		hasOptional   = 0;
+int     nTracSyms     = 0;
+char  **tracSyms      = 0;
 int		i,nfile,ch;
 ObjF	f;
 LinkSet	linkSet;
@@ -2283,7 +2286,7 @@ Sym		*found;
 
 	logf = stdout;
 
-	while ( (ch=getopt(argc, argv, "vOC:FL:A:qhifsdlux:o:e:U")) >= 0 ) {
+	while ( (ch=getopt(argc, argv, "vOC:FL:A:qhifsdlux:o:e:Ut:")) >= 0 ) {
 		switch (ch) { 
 			default: fprintf(stderr, "Unknown option '%c'\n",ch);
 					 exit(1);
@@ -2326,6 +2329,11 @@ Sym		*found;
 					  procTab[nProc].linkNotUnlink = 1;
 					  nProc++;
 					  hasOptional++;
+			break;
+			case 't':
+			          nTracSyms++;
+			          tracSyms = realloc(tracSyms, nTracSyms*sizeof(tracSyms[0]));
+			          tracSyms[nTracSyms-1] = optarg;
 			break;
 			case 'x': procTab = realloc(procTab, sizeof(*procTab) * (nProc+1));
 					  procTab[nProc].fname         = optarg;
@@ -2446,6 +2454,18 @@ Sym		*found;
 
 	if ( options & OPT_SHOW_SYMS )
 		twalk(symTbl, symTraceAct);
+
+	for ( i=0; i<nTracSyms; i++ ) {
+		SymRec s;
+		s.name = tracSyms[i];
+		Sym   *fnd = (Sym*)tfind( &s, &symTbl, symcmp );
+		if ( ! fnd ) {
+			fprintf(logf, "Symbol '%s' not found (-t option) -- ignoring\n", s.name);
+			continue;
+		}
+
+		trackSym(logf, *fnd);
+	}
 
 	if ( options & OPT_SHOW_DEPS ) {
 			for (f=fileListFirst(); f; f=f->next) {
