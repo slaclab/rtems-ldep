@@ -1207,7 +1207,7 @@ int		i;
 			}
 			fprintf(logf,").\n");
 			fprintf(logf, "Work list:\n");
-			workListIterateRef(f, priact, reject);
+			workListIterateRef(f, priInfAct, reject);
 		}
 	}
 	depwalkListRelease(f);
