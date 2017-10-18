@@ -1148,6 +1148,16 @@ int		i;
 	}
 }
 
+/* Callback to print info about an Xref (obj and symbol names) */
+static void priInfAct(Xref r, int depth, void *closure)
+{
+int  i;
+ObjF f = r->obj;
+	for ( i=0; i<depth; i++ )
+		fputc(' ', logf);
+	fprintf(logf, "%s%s (because of '%s')\n", f->name, (void*)f == closure ? " (***)": "", r->sym ? r->sym->name : "");
+}
+
 /*
  * Remove an object and all objects depending on it
  * (i.e. the files which would trigger linkage of 'f')
@@ -1159,15 +1169,6 @@ int		i;
  * RETURNS: 0 on success, NONZERO on failure (i.e. members
  *          of the Application link set depend on 'f').
  */
-static void priact(Xref r, int depth, void *closure)
-{
-int  i;
-ObjF f = r->obj;
-	for ( i=0; i<depth; i++ )
-		fputc(' ', logf);
-	fprintf(logf, "%s%s (because of '%s')\n", f->name, (void*)f == closure ? " (***)": "", r->sym ? r->sym->name : "");
-}
-
 ObjF
 unlinkObj(ObjF f, int checkOnly)
 {
