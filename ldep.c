@@ -91,12 +91,6 @@
 #define DUMMY_ALIAS_PREFIX       "__cexp_dummy_alias_"
 
 
-#undef OLD_UNDEFS /* old way of emitting symbol table declarations for
-                     undefined symbols; DEPRECATED -- code #ifdef OLD_UNDEFS
-					 should go away in the next release
-				   */
-#warning 'Remove dead OLD_UNDEFS code'
-
 /* TYPE DECLARATIONS */
 
 /* 'forward' declaration of pointer types */
@@ -912,23 +906,6 @@ const Sym sym = *(const Sym*)pnode;
 		xref_set_next(ex,0);
 	}
 }
-
-#ifdef OLD_UNDEFS
-static void
-symUnmarkAct(const void *pnode, const VISIT when, const int depth)
-{
-	if ( postorder == when || leaf == when ) {
-		(*(Sym*)pnode)->flags &= ~SYM_FLG_MARK;
-	}
-}
-
-static void
-symTblUnmark()
-{
-	twalk(&symTbl, symUnmarkAct);
-}
-#endif
-
 
 /*
  * Gather symbols which are defined nowhere and attach them
@@ -2024,10 +2001,6 @@ int     doHeader;
 	if (title)
 		fprintf(feil,"/* ----- %s Link Set ----- */\n\n", title);
 
-#ifdef OLD_UNDEFS
-	symTblUnmark();
-#endif
-
 if ( 0 == pass ) {
 	for ( i=0 ; f; f = f->link.next ) {
 		doHeader = 1;
@@ -2038,22 +2011,6 @@ if ( 0 == pass ) {
 				continue;
 			writeSymdecl(feil, &f->exports[n], title, &i);
 		}
-#ifdef OLD_UNDEFS
-		if ( genUndefs ) {
-			for ( n = 0; n < f->nimports; n++ ) {
-				sym = f->imports[n].sym;
-				if ( symIsUndef(sym) && ! (sym->flags & SYM_FLG_MARK) ) {
-					if ( doHeader ) {
-						fprintf(feil,"/* UNDEFINED (hopefully supplied by linker/startfiles); */\n");
-						doHeader = 0;
-					}
-					writeSymdecl(feil, sym, title, &i);
-					/* mark so we only emit a */ 
-					sym->flags |= SYM_FLG_MARKED;
-				}
-			}
-		}
-#endif
 	}
 } else {
 	for ( i=0 ; f; f = f->link.next ) {
@@ -2065,20 +2022,6 @@ if ( 0 == pass ) {
 				continue;
 			writeSymdef(feil, &f->exports[n], title, &i);
 		}
-#ifdef OLD_UNDEFS
-		if ( genUndefs ) {
-			for ( n = 0; n < f->nimports; n++ ) {
-				sym = f->imports[n].sym;
-				if ( symIsUndef(sym) ) {
-					if ( doHeader ) {
-						fprintf(feil,"/* UNDEFINED (hopefully supplied by linker/startfiles); */\n");
-						doHeader = 0;
-					}
-					writeSymdef(feil, sym, title, &i);
-				}
-			}
-		}
-#endif
 	}
 }
 	return 0;
