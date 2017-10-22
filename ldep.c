@@ -1,5 +1,3 @@
-/* $Id$ */
-
 /* tool for library/object file dependency analysis */
 
 /* Author: Till Straumann <strauman@slac.stanford.edu>, 2003 */
@@ -2073,7 +2071,7 @@ const char *strip = strrchr(nm,'/');
 	fprintf(stderr,"\nUsage: %s [-Odfhilmqsuv] [-A main_symbol] [-L path] [-o optional_list] [-x exclude_list] [-e script_file] [-C src_file] nm_files\n\n", nm);
 	fprintf(stderr,"   Object file dependency analysis; the input files must be\n");
 	fprintf(stderr,"   created with 'nm -g -fposix'.\n\n");
-	fprintf(stderr,"(This is ldep $Revision$ by Till Straumann <strauman@slac.stanford.edu>)\n\n");
+	fprintf(stderr,"(This is ldep "GITREV" by Till Straumann <strauman@slac.stanford.edu>)\n\n");
 	fprintf(stderr,"   Input:\n");
 	fprintf(stderr,"           If no 'nm_files' are given, 'stdin' is used. The first 'nm_file' is\n");
 	fprintf(stderr,"           special (unless using -A, see below): it lists MANDATORY objects/symbols\n");
@@ -2254,8 +2252,7 @@ Sym		*found;
 				exit(0);
 
 			case 'v':
-				printf("%s Version $Name$\n",prognam(argv[0]));
-				printf("$Id$\n");
+				printf("%s (git hash %s)\n",prognam(argv[0]), GITREV);
 				exit(0);
 
 
