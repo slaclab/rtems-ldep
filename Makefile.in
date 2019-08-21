@@ -14,7 +14,7 @@ bindir=@bindir@
 all: $(PROG)
 
 $(PROG): @srcdir@/ldep.c
-	$(CC) $(CFLAGS) -o $@ $^
+	$(CC) $(CFLAGS) -DGITREV="\"$(shell git describe --always)\"" -o $@ $^
 
 install: all
 	$(INSTALL) $(PROG) $(bindir)/`echo $(PROG)|sed '@program_transform_name@'`
