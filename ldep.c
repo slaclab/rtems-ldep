@@ -2084,7 +2084,7 @@ const char *strip = strrchr(nm,'/');
 	fprintf(stderr,"\nUsage: %s [-Odfhilmqsuv] [-A main_symbol] [-L path] [-o optional_list] [-x exclude_list] [-e script_file] [-C src_file] nm_files\n\n", nm);
 	fprintf(stderr,"   Object file dependency analysis; the input files must be\n");
 	fprintf(stderr,"   created with 'nm -g -fposix'.\n\n");
-	fprintf(stderr,"(This is ldep "GITREV" by Till Straumann <strauman@slac.stanford.edu>)\n\n");
+	fprintf(stderr,"(This is ldep %s by Till Straumann <strauman@slac.stanford.edu>)\n\n", GITREV);
 	fprintf(stderr,"   Input:\n");
 	fprintf(stderr,"           If no 'nm_files' are given, 'stdin' is used. The first 'nm_file' is\n");
 	fprintf(stderr,"           special (unless using -A, see below): it lists MANDATORY objects/symbols\n");
